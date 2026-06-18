@@ -13,4 +13,3 @@ data
 *.db
 docs
 .mcp.json
-.mcp.json.example

@@ -1,14 +1,12 @@
 version: "3.8"
-
 services:
-  docker-sre-agent:
+  server-sre:
     build: .
-    image: docker-sre-agent:latest
-    container_name: docker-sre-agent
+    image: server-sre-agent:latest
+    container_name: server-sre-agent
     restart: unless-stopped
     ports:
       - "6700:6700"
     env_file: .env
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./config.yaml:/app/config.yaml:ro
