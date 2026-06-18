@@ -51,7 +51,7 @@ jobs:
           password: ${{ secrets.DEPLOY_PASSWORD }}
           script: |
             IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]'):latest"
-            CONTAINER="${{ github.event.repository.name }}"
+            CONTAINER="server-sre-agent"
             DEPLOY_DIR="/opt/1panel/apps/openresty/openresty/www/sites/sre.shenzjd.com/index"
             ENV_FLAG=""
             if [ -f "$DEPLOY_DIR/.env" ]; then
