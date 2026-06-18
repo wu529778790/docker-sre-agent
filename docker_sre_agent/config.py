@@ -153,21 +153,30 @@ def _load_dotenv(path: str = "/app/.env") -> None:
     """Load .env file into os.environ (simple parser, no external dep)."""
     p = Path(path)
     if not p.exists():
+        logger.warning(f".env not found: {path}")
         return
     try:
-        with open(p) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    key, _, value = line.partition("=")
-                    key = key.strip()
-                    value = value.strip().strip('"').strip("'")
-                    if key and key not in os.environ:
-                        os.environ[key] = value
-    except Exception:
-        pass
+        with open(p, "rb") as f:
+            raw = f.read()
+        # Detect BOM
+        if raw.startswith(b'\xef\xbb\xbf'):
+            raw = raw[3:]
+            logger.info("Detected UTF-8 BOM, stripped")
+        text = raw.decode("utf-8", errors="replace")
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+                    if "TOKEN" in key or "KEY" in key:
+                        logger.info(f".env loaded: {key}={value[:4]}***")
+    except Exception as e:
+        logger.warning(f"Failed to load .env: {e}")
 
 
 def _apply_env(config: AgentConfig) -> AgentConfig:
