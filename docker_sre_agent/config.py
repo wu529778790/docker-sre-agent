@@ -155,13 +155,20 @@ def _load_dotenv(path: str = "/app/.env") -> None:
     if not p.exists():
         logger.warning(f".env not found: {path}")
         return
+
+    logger.info(f".env exists: {p}, size={p.stat().st_size}")
+
     try:
         with open(p, "rb") as f:
             raw = f.read()
+
+        logger.info(f".env raw bytes: {raw[:100]}")
+
         # Detect BOM
         if raw.startswith(b'\xef\xbb\xbf'):
             raw = raw[3:]
             logger.info("Detected UTF-8 BOM, stripped")
+
         text = raw.decode("utf-8", errors="replace")
         for line in text.splitlines():
             line = line.strip()
@@ -171,10 +178,10 @@ def _load_dotenv(path: str = "/app/.env") -> None:
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip().strip('"').strip("'")
-                if key and key not in os.environ:
+                already = key in os.environ
+                logger.info(f".env line: key={key}, value_len={len(value)}, already_in_env={already}")
+                if key and not already:
                     os.environ[key] = value
-                    if "TOKEN" in key or "KEY" in key:
-                        logger.info(f".env loaded: {key}={value[:4]}***")
     except Exception as e:
         logger.warning(f"Failed to load .env: {e}")
 
