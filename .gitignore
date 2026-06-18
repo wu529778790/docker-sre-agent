@@ -11,3 +11,5 @@ venv/
 data/
 *.db
 .mcp.json
+.pytest_cache/
+docs/superpowers/
