@@ -112,20 +112,22 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Docker SRE Agent")
-    parser.add_argument("--config", "-c", help="Path to config file", default=None)
     parser.add_argument("--version", "-v", action="store_true", help="Show version")
 
     sub = parser.add_subparsers(dest="command")
 
     # run — daemon mode
-    sub.add_parser("run", help="Run as daemon with periodic scans")
+    run_parser = sub.add_parser("run", help="Run as daemon with periodic scans")
+    run_parser.add_argument("--config", "-c", help="Path to config file", default=None)
 
     # ask — interactive Q&A
     ask_parser = sub.add_parser("ask", help="Ask a question about the server")
+    ask_parser.add_argument("--config", "-c", help="Path to config file", default=None)
     ask_parser.add_argument("question", help="Your question")
 
     # scan — one-shot scan
-    sub.add_parser("scan", help="Run a one-time scan and report")
+    scan_parser = sub.add_parser("scan", help="Run a one-time scan and report")
+    scan_parser.add_argument("--config", "-c", help="Path to config file", default=None)
 
     args = parser.parse_args()
 
