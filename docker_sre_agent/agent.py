@@ -1,4 +1,4 @@
-"""ReAct agent loop with tool dispatch."""
+"""ReAct agent loop with tool dispatch and conversation memory."""
 
 from __future__ import annotations
 
@@ -41,9 +41,7 @@ class Agent:
         if total <= MAX_MESSAGE_CHARS:
             return messages
 
-        # Keep system message (index 0 if present) and recent messages
-        # Truncate old tool_result content
-        for i, msg in enumerate(messages):
+        for msg in messages:
             if msg.get("role") == "user" and isinstance(msg.get("content"), list):
                 for block in msg["content"]:
                     if block.get("type") == "tool_result" and len(block.get("content", "")) > 2000:
@@ -66,19 +64,17 @@ class Agent:
 
     def _run_loop(
         self,
-        user_message: str,
+        messages: list[dict],
         system_prompt: str | None,
         on_tool_call: Callable | None,
         on_tool_result: Callable | None,
-    ) -> str:
-        """Core ReAct loop. Returns final text response."""
-        messages: list[dict] = [{"role": "user", "content": user_message}]
+    ) -> list[dict]:
+        """Core ReAct loop. Takes messages, returns updated messages (with assistant response appended)."""
         prompt = system_prompt or self.system_prompt
         total_input_tokens = 0
         total_output_tokens = 0
 
         for round_num in range(self.max_rounds):
-            # Truncate if messages are too large
             messages = self._truncate_tools_if_needed(messages)
 
             response = self.llm.chat(
@@ -95,9 +91,11 @@ class Agent:
                     f"Agent done in {round_num + 1} rounds, "
                     f"tokens: in={total_input_tokens} out={total_output_tokens}"
                 )
-                return response.text or ""
+                # Append final assistant response
+                messages.append({"role": "assistant", "content": response.text or ""})
+                return messages
 
-            # Build assistant message
+            # Build assistant message with tool calls
             assistant_content = []
             if response.text:
                 assistant_content.append({"type": "text", "text": response.text})
@@ -110,7 +108,7 @@ class Agent:
                 })
             messages.append({"role": "assistant", "content": assistant_content})
 
-            # Execute tools
+            # Execute tools and append results
             for tc in response.tool_calls:
                 if on_tool_call:
                     on_tool_call(tc.name, tc.input)
@@ -123,15 +121,43 @@ class Agent:
                 messages.append(self.llm.make_tool_result(tc.id, result, is_error=is_error))
 
         logger.warning(f"Agent reached max rounds ({self.max_rounds})")
-        return "达到最大工具调用次数，分析未完成。请尝试简化问题后重试。"
+        messages.append({"role": "assistant", "content": "达到最大工具调用次数，分析未完成。请尝试简化问题后重试。"})
+        return messages
 
+    def chat(self, messages: list[dict], system_prompt: str | None = None) -> list[dict]:
+        """Chat with conversation history. Returns updated messages list."""
+        return self._run_loop(list(messages), system_prompt, None, None)
+
+    def chat_streaming(
+        self, messages: list[dict], system_prompt: str | None = None,
+        on_tool_call: Callable | None = None, on_tool_result: Callable | None = None,
+    ) -> list[dict]:
+        """Chat with conversation history and streaming callbacks."""
+        return self._run_loop(list(messages), system_prompt, on_tool_call, on_tool_result)
+
+    # Legacy API — single message, no history
     def run(self, user_message: str, system_prompt: str | None = None) -> str:
         """Run the agent loop and return the final response text."""
-        return self._run_loop(user_message, system_prompt, None, None)
+        messages = [{"role": "user", "content": user_message}]
+        result = self._run_loop(messages, system_prompt, None, None)
+        # Extract last assistant message text
+        for msg in reversed(result):
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content
+        return ""
 
     def run_streaming(
         self, user_message: str, system_prompt: str | None = None,
         on_tool_call: Callable | None = None, on_tool_result: Callable | None = None,
     ) -> str:
         """Run with callbacks for streaming progress updates."""
-        return self._run_loop(user_message, system_prompt, on_tool_call, on_tool_result)
+        messages = [{"role": "user", "content": user_message}]
+        result = self._run_loop(messages, system_prompt, on_tool_call, on_tool_result)
+        for msg in reversed(result):
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content
+        return ""

@@ -78,6 +78,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
     <span style="font-size: 24px;">🤖</span>
     <h1>Docker SRE Agent</h1>
     <span class="status">● 在线</span>
+    <button class="logout" onclick="clearHistory()">清空对话</button>
     <button class="logout" onclick="doLogout()">退出</button>
   </div>
 
@@ -143,6 +144,17 @@ function doLogout() {
   document.getElementById('chatApp').classList.add('hidden');
   document.getElementById('loginOverlay').classList.remove('hidden');
   document.getElementById('tokenInput').value = '';
+}
+
+async function clearHistory() {
+  await fetch('/api/chat/clear', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${authToken}` },
+  });
+  // Clear chat UI
+  chat.innerHTML = `<div class="message bot">
+    <p>👋 对话已清空。你可以问我任何问题。</p>
+  </div>`;
 }
 
 function showChat() {

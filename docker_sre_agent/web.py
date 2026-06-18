@@ -127,12 +127,62 @@ def auth():
 
 
 MAX_MESSAGE_LENGTH = 4000
+MAX_HISTORY_MESSAGES = 50  # keep last N messages per session
+
+
+# --- Conversation history (per auth token, in-memory) ---
+_conversations: dict[str, list[dict]] = {}
+
+
+def _get_session_key() -> str:
+    """Get session key from auth token or IP."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return _hash_token(auth[7:])
+    return request.remote_addr or "anonymous"
+
+
+def _get_history() -> list[dict]:
+    key = _get_session_key()
+    return _conversations.setdefault(key, [])
+
+
+def _trim_history(history: list[dict]) -> None:
+    """Keep history within limits."""
+    while len(history) > MAX_HISTORY_MESSAGES:
+        history.pop(0)
+
+
+@app.route("/api/chat/history", methods=["GET"])
+@require_auth
+def get_chat_history():
+    """Get conversation history."""
+    history = _get_history()
+    # Extract readable messages (skip tool internals)
+    readable = []
+    for msg in history:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "user":
+            readable.append({"role": "user", "content": content})
+        elif role == "assistant" and isinstance(content, str) and content:
+            readable.append({"role": "assistant", "content": content})
+    return {"messages": readable}
+
+
+@app.route("/api/chat/clear", methods=["POST"])
+@require_auth
+def clear_chat_history():
+    """Clear conversation history."""
+    key = _get_session_key()
+    _conversations[key] = []
+    return {"ok": True}
 
 
 @app.route("/api/chat", methods=["POST"])
 @require_auth
 def chat():
-    """Non-streaming chat endpoint."""
+    """Non-streaming chat endpoint with conversation memory."""
     data = request.json
     message = data.get("message", "")
     if not message:
@@ -143,15 +193,37 @@ def chat():
     if not _agent:
         return {"error": "agent not initialized"}, 500
 
-    prompt = ASK_PROMPT.format(question=message)
-    result = _agent.run(prompt)
-    return {"reply": result}
+    history = _get_history()
+
+    # First message — add system context
+    if not history:
+        history.append({"role": "user", "content": ASK_PROMPT.format(question="")})
+        history.append({"role": "assistant", "content": "好的，我是你的服务器运维助手。你可以问我任何关于服务器、Docker、日志的问题。"})
+
+    # Add user message
+    history.append({"role": "user", "content": message})
+    _trim_history(history)
+
+    # Run agent with full history
+    result_messages = _agent.chat(history)
+
+    # Update history with agent's response
+    _conversations[_get_session_key()] = result_messages
+
+    # Extract reply text
+    reply = ""
+    for msg in reversed(result_messages):
+        if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
+            reply = msg["content"]
+            break
+
+    return {"reply": reply}
 
 
 @app.route("/api/chat/stream", methods=["POST"])
 @require_auth
 def chat_stream():
-    """SSE streaming chat endpoint."""
+    """SSE streaming chat endpoint with conversation memory."""
     data = request.json or {}
     message = data.get("message", "")
     if not message:
@@ -161,6 +233,17 @@ def chat_stream():
 
     if not _agent:
         return {"error": "agent not initialized"}, 500
+
+    history = _get_history()
+
+    # First message — add system context
+    if not history:
+        history.append({"role": "user", "content": ASK_PROMPT.format(question="")})
+        history.append({"role": "assistant", "content": "好的，我是你的服务器运维助手。你可以问我任何关于服务器、Docker、日志的问题。"})
+
+    # Add user message
+    history.append({"role": "user", "content": message})
+    _trim_history(history)
 
     def generate():
         q: queue.Queue = queue.Queue()
@@ -173,13 +256,21 @@ def chat_stream():
 
         def run_agent():
             try:
-                prompt = ASK_PROMPT.format(question=message)
-                result = _agent.run_streaming(
-                    prompt,
+                result_messages = _agent.chat_streaming(
+                    history,
                     on_tool_call=on_tool_call,
                     on_tool_result=on_tool_result,
                 )
-                q.put({"type": "final", "text": result})
+                # Update conversation history
+                _conversations[_get_session_key()] = result_messages
+
+                # Extract reply text
+                reply = ""
+                for msg in reversed(result_messages):
+                    if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
+                        reply = msg["content"]
+                        break
+                q.put({"type": "final", "text": reply})
             except Exception as e:
                 q.put({"type": "error", "text": str(e)})
             finally:
