@@ -108,6 +108,21 @@ def cmd_scan(config) -> None:
         print(f"\n磁盘状况:\n{disk_data}")
 
 
+def cmd_web(config) -> None:
+    """Run the web chat server."""
+    from docker_sre_agent.web import create_app
+
+    if not config.llm.api_key:
+        print("错误: 未配置 ANTHROPIC_API_KEY")
+        sys.exit(1)
+
+    app = create_app(config)
+    host = config.llm.base_url if hasattr(config, 'web_host') else "0.0.0.0"
+    port = int(getattr(config, 'web_port', 8080))
+    logging.info(f"Web server starting on http://{host}:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
+
+
 def main() -> None:
     import argparse
 
@@ -129,6 +144,11 @@ def main() -> None:
     scan_parser = sub.add_parser("scan", help="Run a one-time scan and report")
     scan_parser.add_argument("--config", "-c", help="Path to config file", default=None)
 
+    # web — chat web UI
+    web_parser = sub.add_parser("web", help="Run web chat server")
+    web_parser.add_argument("--config", "-c", help="Path to config file", default=None)
+    web_parser.add_argument("--port", "-p", type=int, default=8080, help="Port (default: 8080)")
+
     args = parser.parse_args()
 
     if args.version:
@@ -145,6 +165,8 @@ def main() -> None:
         cmd_ask(config, args.question)
     elif args.command == "scan":
         cmd_scan(config)
+    elif args.command == "web":
+        cmd_web(config)
     else:
         # Default: daemon mode
         cmd_run(config)

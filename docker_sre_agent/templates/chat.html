@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docker SRE Agent</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+
+.header { padding: 16px 20px; background: #1a1a1a; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 10px; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header .status { font-size: 12px; color: #4ade80; }
+
+.chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+
+.message { max-width: 80%; padding: 12px 16px; border-radius: 12px; line-height: 1.6; font-size: 14px; word-wrap: break-word; }
+.message.user { align-self: flex-end; background: #2563eb; color: white; border-bottom-right-radius: 4px; }
+.message.bot { align-self: flex-start; background: #1e1e1e; border: 1px solid #333; border-bottom-left-radius: 4px; }
+.message.bot pre { background: #111; padding: 10px; border-radius: 6px; overflow-x: auto; margin: 8px 0; font-size: 13px; }
+.message.bot code { font-family: 'SF Mono', 'Fira Code', monospace; }
+.message.bot p { margin: 6px 0; }
+
+.tool-event { align-self: flex-start; padding: 6px 12px; border-radius: 8px; background: #1a1a2e; border: 1px solid #16213e; font-size: 12px; color: #94a3b8; }
+.tool-event .icon { margin-right: 6px; }
+
+.thinking { align-self: flex-start; padding: 12px 16px; background: #1e1e1e; border: 1px solid #333; border-radius: 12px; }
+.thinking .dots { display: flex; gap: 4px; }
+.thinking .dots span { width: 8px; height: 8px; background: #666; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out; }
+.thinking .dots span:nth-child(1) { animation-delay: 0s; }
+.thinking .dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking .dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
+
+.input-area { padding: 16px 20px; background: #1a1a1a; border-top: 1px solid #333; display: flex; gap: 10px; }
+.input-area textarea { flex: 1; background: #0f0f0f; border: 1px solid #333; border-radius: 10px; padding: 12px; color: #e0e0e0; font-size: 14px; resize: none; outline: none; font-family: inherit; min-height: 44px; max-height: 120px; }
+.input-area textarea:focus { border-color: #2563eb; }
+.input-area button { background: #2563eb; color: white; border: none; border-radius: 10px; padding: 12px 20px; cursor: pointer; font-size: 14px; font-weight: 500; }
+.input-area button:hover { background: #1d4ed8; }
+.input-area button:disabled { background: #333; cursor: not-allowed; }
+
+.quick-actions { padding: 0 20px 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+.quick-actions button { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 6px 12px; color: #94a3b8; font-size: 12px; cursor: pointer; }
+.quick-actions button:hover { background: #2563eb; color: white; border-color: #2563eb; }
+
+.markdown h1, .markdown h2, .markdown h3 { margin: 10px 0 6px; }
+.markdown ul, .markdown ol { padding-left: 20px; margin: 6px 0; }
+.markdown li { margin: 3px 0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span style="font-size: 24px;">🤖</span>
+  <h1>Docker SRE Agent</h1>
+  <span class="status">● 在线</span>
+</div>
+
+<div class="chat-container" id="chat">
+  <div class="message bot">
+    <p>👋 你好！我是 Docker SRE Agent。</p>
+    <p>你可以问我：</p>
+    <ul>
+      <li>服务器上有什么垃圾？</li>
+      <li>nginx 最近有什么报错？</li>
+      <li>哪个容器占用内存最多？</li>
+      <li>帮我分析一下 Docker 环境</li>
+    </ul>
+  </div>
+</div>
+
+<div class="quick-actions">
+  <button onclick="sendQuick('服务器上有什么垃圾')">🗑️ 垃圾扫描</button>
+  <button onclick="sendQuick('所有容器的状态和资源占用')">📊 资源占用</button>
+  <button onclick="sendQuick('分析 Docker 环境，给出清理建议')">🔍 Docker 分析</button>
+</div>
+
+<div class="input-area">
+  <textarea id="input" placeholder="输入消息..." rows="1" onkeydown="handleKey(event)"></textarea>
+  <button id="sendBtn" onclick="send()">发送</button>
+</div>
+
+<script>
+const chat = document.getElementById('chat');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+let isProcessing = false;
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+}
+
+function sendQuick(text) {
+  input.value = text;
+  send();
+}
+
+function scrollToBottom() {
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addMessage(type, content) {
+  const div = document.createElement('div');
+  div.className = `message ${type}`;
+  if (type === 'bot') {
+    div.innerHTML = renderMarkdown(content);
+  } else {
+    div.textContent = content;
+  }
+  chat.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
+function addToolEvent(icon, text) {
+  const div = document.createElement('div');
+  div.className = 'tool-event';
+  div.innerHTML = `<span class="icon">${icon}</span>${text}`;
+  chat.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
+function addThinking() {
+  const div = document.createElement('div');
+  div.className = 'thinking';
+  div.innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
+  chat.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  return text
+    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
+    .replace(/\n/g, '<br>');
+}
+
+async function send() {
+  const message = input.value.trim();
+  if (!message || isProcessing) return;
+
+  isProcessing = true;
+  sendBtn.disabled = true;
+  input.value = '';
+  input.style.height = 'auto';
+
+  addMessage('user', message);
+  const thinking = addThinking();
+
+  try {
+    const res = await fetch(`/api/chat/stream?encodeURIComponent=${encodeURIComponent(message)}`);
+
+    if (!res.ok) {
+      thinking.remove();
+      addMessage('bot', '❌ 请求失败: ' + res.statusText);
+      isProcessing = false;
+      sendBtn.disabled = false;
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalText = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const event = JSON.parse(line.slice(6));
+
+          if (event.type === 'tool_call') {
+            addToolEvent('🔧', `调用工具: ${event.name}`);
+          } else if (event.type === 'tool_result') {
+            addToolEvent('✅', `${event.name} 完成`);
+          } else if (event.type === 'final') {
+            finalText = event.text;
+          } else if (event.type === 'error') {
+            finalText = '❌ 错误: ' + event.text;
+          }
+        } catch (e) {}
+      }
+    }
+
+    thinking.remove();
+    if (finalText) {
+      addMessage('bot', finalText);
+    }
+  } catch (e) {
+    thinking.remove();
+    addMessage('bot', '❌ 连接失败: ' + e.message);
+  }
+
+  isProcessing = false;
+  sendBtn.disabled = false;
+  input.focus();
+}
+
+// Auto-resize textarea
+input.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+input.focus();
+</script>
+</body>
+</html>
