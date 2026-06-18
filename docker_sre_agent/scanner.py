@@ -8,9 +8,8 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-import docker
-
 from docker_sre_agent.config import AgentConfig
+from docker_sre_agent.docker_client import get_client
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +30,7 @@ class Scanner:
 
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
-        self.client = docker.from_env()
+        self.client = get_client()
         self._states: dict[str, ContainerState] = {}
         self._global_timestamps: deque = deque()
         self._running = False

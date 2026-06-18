@@ -95,6 +95,9 @@ def auth():
     return {"ok": False, "error": "invalid token"}, 401
 
 
+MAX_MESSAGE_LENGTH = 4000
+
+
 @app.route("/api/chat", methods=["POST"])
 @require_auth
 def chat():
@@ -103,6 +106,8 @@ def chat():
     message = data.get("message", "")
     if not message:
         return {"error": "empty message"}, 400
+    if len(message) > MAX_MESSAGE_LENGTH:
+        return {"error": f"消息过长（最多 {MAX_MESSAGE_LENGTH} 字）"}, 400
 
     if not _agent:
         return {"error": "agent not initialized"}, 500
@@ -120,6 +125,8 @@ def chat_stream():
     message = data.get("message", "")
     if not message:
         return {"error": "empty message"}, 400
+    if len(message) > MAX_MESSAGE_LENGTH:
+        return {"error": f"消息过长（最多 {MAX_MESSAGE_LENGTH} 字）"}, 400
 
     if not _agent:
         return {"error": "agent not initialized"}, 500
@@ -163,9 +170,9 @@ def chat_stream():
 @require_auth
 def list_containers():
     """List all containers."""
-    import docker
+    from docker_sre_agent.docker_client import get_client
     try:
-        client = docker.from_env()
+        client = get_client()
         containers = client.containers.list(all=True)
         result = []
         for c in containers:
@@ -187,7 +194,7 @@ def get_logs(name: str):
     grep = request.args.get("grep", "")
     since = request.args.get("since", "")
 
-    from docker_sre_agent.tools.logs import FetchLogsTool
-    tool = FetchLogsTool()
+    from docker_sre_agent.tools import ALL_TOOLS
+    tool = next(t for t in ALL_TOOLS if t.name == "fetch_logs")
     result = tool.execute(name=name, tail=tail, grep=grep, since=since)
     return Response(result, mimetype="application/json")

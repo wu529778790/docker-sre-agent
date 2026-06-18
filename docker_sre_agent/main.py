@@ -58,6 +58,8 @@ def cmd_run(config) -> None:
         await shutdown.wait()
         await scanner.stop()
         await scheduler.stop()
+        from docker_sre_agent.docker_client import close
+        close()
 
     logging.info(f"Agent '{config.name}' starting (daemon mode)")
     asyncio.run(run_all())

@@ -8,6 +8,7 @@ import os
 import subprocess
 from typing import Any
 
+from docker_sre_agent.docker_client import get_client
 from docker_sre_agent.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -58,27 +59,33 @@ class ScanDiskTool(Tool):
         except Exception as e:
             result["disk_overview"] = f"无法获取: {e}"
 
-        # Top large files
+        # Top large files — scan common directories instead of /
         try:
+            scan_dirs = [d for d in ["/var", "/tmp", "/opt", "/root", "/home"] if os.path.isdir(d)]
             find_result = subprocess.run(
-                ["find", "/", "-xdev", "-type", "f", "-size", "+100M",
-                 "-exec", "ls", "-lh", "{}", ";"],
-                capture_output=True, text=True, timeout=30,
+                ["find"] + scan_dirs + ["-xdev", "-type", "f", "-size", "+50M",
+                 "-printf", "%s %p\n"],
+                capture_output=True, text=True, timeout=60,
             )
             files = []
             for line in find_result.stdout.strip().split("\n"):
-                if line and not line.startswith("find:"):
-                    parts = line.split()
-                    if len(parts) >= 9:
-                        files.append({
-                            "size": parts[4],
-                            "path": " ".join(parts[8:]),
-                        })
-            # Sort by size approximation
-            files.sort(key=lambda f: f["size"], reverse=True)
+                if not line or not line[0].isdigit():
+                    continue
+                parts = line.split(" ", 1)
+                if len(parts) == 2:
+                    size_bytes = int(parts[0])
+                    files.append({
+                        "size_bytes": size_bytes,
+                        "size": _format_size(size_bytes),
+                        "path": parts[1],
+                    })
+            files.sort(key=lambda f: f["size_bytes"], reverse=True)
+            # Remove size_bytes from output
+            for f in files:
+                f.pop("size_bytes")
             result["large_files"] = files[:top_n]
         except subprocess.TimeoutExpired:
-            result["large_files"] = "扫描超时，跳过"
+            result["large_files"] = "扫描超时"
         except Exception as e:
             result["large_files"] = f"扫描失败: {e}"
 
@@ -128,8 +135,7 @@ class ScanResourcesTool(Tool):
 
     def execute(self, **kwargs: Any) -> str:
         try:
-            import docker
-            client = docker.from_env()
+            client = get_client()
         except Exception:
             return json.dumps({"error": "无法连接 Docker daemon"}, ensure_ascii=False)
 

@@ -9,6 +9,7 @@ from typing import Any
 
 import docker
 
+from docker_sre_agent.docker_client import get_client
 from docker_sre_agent.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ class ScanDockerTool(Tool):
 
     def execute(self, **kwargs: Any) -> str:
         try:
-            client = docker.from_env()
+            client = get_client()
         except docker.errors.DockerException:
             return json.dumps({"error": "无法连接 Docker daemon"}, ensure_ascii=False)
 
@@ -152,7 +153,7 @@ class InspectContainerTool(Tool):
 
     def execute(self, name: str = "", **kwargs: Any) -> str:
         try:
-            client = docker.from_env()
+            client = get_client()
             container = client.containers.get(name)
         except docker.errors.NotFound:
             return json.dumps({"error": f"容器 '{name}' 不存在"}, ensure_ascii=False)
