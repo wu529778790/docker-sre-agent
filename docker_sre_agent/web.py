@@ -229,3 +229,208 @@ def get_logs(name: str):
     tool = next(t for t in ALL_TOOLS if t.name == "fetch_logs")
     result = tool.execute(name=name, tail=tail, grep=grep, since=since)
     return Response(result, mimetype="application/json")
+
+
+# ============================================================
+# MCP HTTP Transport (Streamable HTTP)
+# ============================================================
+
+MCP_SERVER_INFO = {
+    "name": "docker-sre-agent",
+    "version": "0.2.0",
+}
+
+MCP_CAPABILITIES = {
+    "tools": {"listChanged": False},
+}
+
+# Tools exposed via MCP (subset of ALL_TOOLS + custom ones)
+_mcp_tool_map: dict[str, Any] = {}
+
+
+def _get_mcp_tools() -> list[dict]:
+    """Return MCP tool schemas."""
+    tools = [
+        {
+            "name": "fetch_logs",
+            "description": "获取容器日志，支持 tail 行数、grep 关键词过滤、since 时间范围",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "容器名称"},
+                    "tail": {"type": "integer", "default": 100, "description": "获取最近多少行"},
+                    "grep": {"type": "string", "description": "关键词过滤"},
+                    "since": {"type": "string", "description": "时间范围 (30m/1h/24h)"},
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "list_containers",
+            "description": "列出所有 Docker 容器及其状态",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "container_status",
+            "description": "获取指定容器的详细状态、资源使用、最近日志",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "容器名称"},
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "server_info",
+            "description": "获取服务器磁盘和 Docker 环境概览",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+    ]
+    return tools
+
+
+def _execute_mcp_tool(name: str, arguments: dict) -> str:
+    """Execute an MCP tool and return the result string."""
+    if name == "fetch_logs":
+        from docker_sre_agent.tools.logs import FetchLogsTool
+        tool = FetchLogsTool()
+        return tool.execute(**arguments)
+
+    elif name == "list_containers":
+        from docker_sre_agent.docker_client import get_client
+        client = get_client()
+        containers = client.containers.list(all=True)
+        result = []
+        for c in containers:
+            result.append({
+                "name": c.name,
+                "status": c.status,
+                "image": c.image.tags[0] if c.image.tags else str(c.image.id)[:12],
+            })
+        return json.dumps({"containers": result}, ensure_ascii=False, indent=2)
+
+    elif name == "container_status":
+        container_name = arguments.get("name", "")
+        from docker_sre_agent.docker_client import get_client
+        client = get_client()
+        try:
+            c = client.containers.get(container_name)
+            attrs = c.attrs
+            state = attrs.get("State", {})
+            # Get last 30 lines of logs
+            logs = c.logs(tail=30, timestamps=True).decode("utf-8", errors="replace")
+            result = {
+                "name": c.name,
+                "status": state.get("Status"),
+                "health": state.get("Health", {}).get("Status"),
+                "oom_killed": state.get("OOMKilled", False),
+                "restart_count": state.get("RestartCount", 0),
+                "started_at": state.get("StartedAt"),
+                "recent_logs": logs[-1000:],
+            }
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    elif name == "server_info":
+        import subprocess
+        info = {}
+        try:
+            df = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, timeout=5)
+            info["disk"] = df.stdout.strip()
+        except Exception:
+            info["disk"] = "无法获取"
+        try:
+            from docker_sre_agent.docker_client import get_client
+            client = get_client()
+            info["docker_version"] = client.version().get("Version", "unknown")
+            info["containers_total"] = len(client.containers.list(all=True))
+            info["containers_running"] = len(client.containers.list(filters={"status": "running"}))
+        except Exception:
+            pass
+        return json.dumps(info, ensure_ascii=False, indent=2)
+
+    return json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False)
+
+
+@app.route("/mcp", methods=["POST"])
+@require_auth
+def mcp_endpoint():
+    """MCP Streamable HTTP endpoint — handles JSON-RPC messages."""
+    data = request.json
+    if not data:
+        return {"error": "invalid JSON"}, 400
+
+    method = data.get("method", "")
+    msg_id = data.get("id")
+    params = data.get("params", {})
+
+    # Handle different MCP methods
+    if method == "initialize":
+        result = {
+            "protocolVersion": "2025-03-26",
+            "capabilities": MCP_CAPABILITIES,
+            "serverInfo": MCP_SERVER_INFO,
+        }
+
+    elif method == "notifications/initialized":
+        # Client acknowledgment, no response needed
+        return Response(status=204)
+
+    elif method == "tools/list":
+        result = {"tools": _get_mcp_tools()}
+
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments", {})
+        try:
+            tool_result = _execute_mcp_tool(tool_name, arguments)
+            result = {
+                "content": [{"type": "text", "text": tool_result}],
+            }
+        except Exception as e:
+            result = {
+                "content": [{"type": "text", "text": f"Error: {e}"}],
+                "isError": True,
+            }
+
+    elif method == "ping":
+        result = {}
+
+    else:
+        return json.dumps({
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }), 400
+
+    # Standard JSON-RPC response
+    response = {
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "result": result,
+    }
+    return Response(
+        json.dumps(response, ensure_ascii=False),
+        mimetype="application/json",
+    )
+
+
+@app.route("/mcp", methods=["GET"])
+def mcp_sse():
+    """MCP SSE endpoint — for server-initiated messages (not used yet)."""
+    def generate():
+        yield "event: endpoint\ndata: /mcp\n\n"
+        # Keep alive
+        while True:
+            yield "event: ping\ndata: {}\n\n"
+            _time.sleep(30)
+
+    return Response(generate(), mimetype="text/event-stream")
+
+
+@app.route("/mcp", methods=["DELETE"])
+def mcp_delete():
+    """MCP session termination."""
+    return Response(status=200)
