@@ -1,73 +1,92 @@
-# Docker SRE Agent
+# Server SRE Agent
 
-AI 驱动的 Docker 运维 Agent — 自动重启、智能扫描、清理建议。
+轻量级服务器自动运维 Agent — 面向 2核2G 小水管云服务器。
 
 ## 功能
 
-- **自动重启** — 容器挂了自动重启，限速防风暴
-- **定时扫描** — 每小时 Docker 垃圾扫描，每天全盘扫描
-- **AI 分析** — Claude 分析扫描结果，给出清理建议
-- **交互问答** — 直接问 agent 关于服务器的任何问题
+- 🔄 **容器自动重启** — 监听 Docker 事件，容器挂了自动拉起，限速防风暴
+- 🗑️ **磁盘清理** — 扫描 Docker + 宿主机磁盘占用，LLM 分析哪些能清
+- 📊 **资源监控** — CPU/内存/磁盘使用率，容器资源排行
+- 🌐 **Web 界面** — 手机查看服务器状态，聊天问答
 
 ## 快速开始
 
-### 配置
+### 配置 .env
 
 ```bash
-# 设置 API Key
-export ANTHROPIC_API_KEY="your-key-here"
-
-# 或在 config.yaml 中配置
+cp .env.example .env
+# 编辑 .env，填入你的配置
 ```
 
-### 运行
+### Docker 部署（推荐）
+
+```bash
+docker compose up -d
+```
+
+### 直接运行
 
 ```bash
 pip install -e .
 
-# 守护进程模式 — 自动扫描 + 容器监控
-docker-sre run --config config.yaml
+# Web 界面
+server-sre web --port 6700
 
-# 交互问答
-docker-sre ask "服务器上有什么垃圾"
-
-# 一次性扫描
-docker-sre scan
+# 守护进程（事件监听 + 定时扫描）
+server-sre run
 ```
 
-### Docker 部署
+## 架构
 
-```bash
-ANTHROPIC_API_KEY=xxx docker compose up -d
+```
+Docker 容器
+├── 规则引擎 — 处理简单任务（快+免费）
+├── LLM 分析 — 处理复杂情况（可选）
+├── Web UI — 手机查看状态
+├── Scanner — Docker 事件监听 + 自动重启
+├── Scheduler — 定时磁盘扫描 + 资源检查
+└── 工具层
+    ├── Docker 工具 — 通过 socket 管理容器
+    └── 宿主机工具 — 通过临时容器执行命令
 ```
 
-## 命令
+## 工具
 
-| 命令 | 说明 |
+| 工具 | 作用 |
 |------|------|
-| `docker-sre run` | 守护进程，定时扫描 + 容器监控 |
-| `docker-sre ask "问题"` | 问答模式，问完退出 |
-| `docker-sre scan` | 一次性扫描，输出报告 |
+| `docker_info` | Docker 磁盘占用分析 |
+| `docker_clean` | 清理 Docker 垃圾 |
+| `container_list` | 列出所有容器状态 |
+| `container_restart` | 重启容器 |
+| `host_exec` | 在宿主机执行命令（只读） |
+| `host_disk_scan` | 宿主机磁盘扫描 |
 
 ## 配置
 
 编辑 `config.yaml`：
 
 ```yaml
-scheduler:
-  scan_interval: 3600           # AI 扫描间隔（秒）
-  deep_scan_interval: 86400     # 全盘扫描间隔（秒）
+monitor:
+  exclude_containers: ["server-sre-agent"]
+  check_interval: 300
 
-llm:
-  model: "claude-sonnet-4-20250514"
-  max_tool_rounds: 10
+restart:
+  max_per_container_per_hour: 5
+  max_consecutive_fails: 3
 
 cleanup:
-  mode: "report"                # report=只报告, auto=自动清理
+  mode: "report"    # report=只报告, auto=自动清理
+
+llm:
+  enabled: true
+  model: "claude-sonnet-4-20250514"
+
+web:
+  port: 6700
 ```
 
 ## 依赖
 
 - Python 3.9+
 - Docker
-- Anthropic API Key
+- Anthropic API Key（可选，不配置则只用规则引擎）
