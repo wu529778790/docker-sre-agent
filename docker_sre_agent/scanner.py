@@ -1,0 +1,150 @@
+"""Docker event listener + auto-restart (inherited from v1)."""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass, field
+
+import docker
+
+from docker_sre_agent.config import AgentConfig
+
+logger = logging.getLogger(__name__)
+
+TRIGGER_EVENTS = {"die", "oom"}
+HEALTH_EVENT_PREFIX = "health_status: unhealthy"
+
+
+@dataclass
+class ContainerState:
+    restart_timestamps: deque = field(default_factory=deque)
+    consecutive_fails: int = 0
+    stopped: bool = False
+
+
+class Scanner:
+    """Monitors Docker events and restarts failed containers."""
+
+    def __init__(self, config: AgentConfig) -> None:
+        self.config = config
+        self.client = docker.from_env()
+        self._states: dict[str, ContainerState] = {}
+        self._global_timestamps: deque = deque()
+        self._running = False
+
+    def _should_monitor(self, name: str) -> bool:
+        if name in self.config.monitor.exclude_containers:
+            return False
+        if self.config.monitor.watch_containers:
+            return name in self.config.monitor.watch_containers
+        return True
+
+    def _cleanup_window(self, timestamps: deque, window: float = 3600) -> None:
+        cutoff = time.time() - window
+        while timestamps and timestamps[0] < cutoff:
+            timestamps.popleft()
+
+    def _is_rate_limited(self, name: str) -> bool:
+        rc = self.config.restart
+        state = self._get_state(name)
+        self._cleanup_window(state.restart_timestamps)
+        if len(state.restart_timestamps) >= rc.max_per_container_per_hour:
+            logger.warning(f"Rate limited (per-container): '{name}'")
+            return True
+        self._cleanup_window(self._global_timestamps)
+        if len(self._global_timestamps) >= rc.max_global_per_hour:
+            logger.warning(f"Rate limited (global): reached max")
+            return True
+        return False
+
+    def _record_restart(self, name: str) -> None:
+        now = time.time()
+        self._get_state(name).restart_timestamps.append(now)
+        self._global_timestamps.append(now)
+
+    def _get_state(self, name: str) -> ContainerState:
+        if name not in self._states:
+            self._states[name] = ContainerState()
+        return self._states[name]
+
+    def _is_trigger_event(self, event: dict) -> bool:
+        status = event.get("status", "")
+        if status in TRIGGER_EVENTS:
+            return True
+        if status.startswith(HEALTH_EVENT_PREFIX):
+            return True
+        return False
+
+    def _get_container_name(self, event: dict) -> str | None:
+        attrs = event.get("Actor", {}).get("Attributes", {})
+        return attrs.get("name")
+
+    async def _restart(self, name: str) -> bool:
+        try:
+            container = self.client.containers.get(name)
+        except docker.errors.NotFound:
+            logger.warning(f"Container '{name}' not found")
+            return False
+        try:
+            logger.info(f"Restarting '{name}'...")
+            container.restart(timeout=self.config.restart.timeout)
+            logger.info(f"Container '{name}' restarted successfully")
+            return True
+        except Exception as e:
+            logger.warning(f"restart() failed for '{name}': {e}")
+        try:
+            logger.info(f"Trying stop+start for '{name}'...")
+            container.stop(timeout=self.config.restart.timeout)
+            container.start()
+            return True
+        except Exception as e:
+            logger.error(f"stop+start failed for '{name}': {e}")
+            return False
+
+    def _handle_event(self, event: dict) -> None:
+        if not self._is_trigger_event(event):
+            return
+        name = self._get_container_name(event)
+        if not name or not self._should_monitor(name):
+            return
+
+        state = self._get_state(name)
+        if state.stopped:
+            return
+        if self._is_rate_limited(name):
+            return
+
+        success = self._restart(name)
+        if success:
+            state.consecutive_fails = 0
+        else:
+            state.consecutive_fails += 1
+            if state.consecutive_fails >= self.config.restart.max_consecutive_fails:
+                state.stopped = True
+                logger.error(
+                    f"Container '{name}' failed {state.consecutive_fails} consecutive "
+                    f"restarts, stopping auto-restart."
+                )
+        self._record_restart(name)
+
+    async def start(self) -> None:
+        self._running = True
+        logger.info("Event listener started")
+        try:
+            for event in self.client.events(decode=True):
+                if not self._running:
+                    break
+                try:
+                    self._handle_event(event)
+                except Exception:
+                    logger.exception("Error handling event")
+        except Exception:
+            logger.exception("Event loop crashed")
+        finally:
+            self._running = False
+
+    async def stop(self) -> None:
+        self._running = False
+        logger.info("Event listener stopped")

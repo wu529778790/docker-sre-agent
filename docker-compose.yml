@@ -6,6 +6,8 @@ services:
     image: docker-sre-agent:latest
     container_name: docker-sre-agent
     restart: unless-stopped
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config.yaml:/app/config.yaml:ro

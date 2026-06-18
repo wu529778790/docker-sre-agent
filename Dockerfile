@@ -9,4 +9,4 @@ RUN pip install --no-cache-dir .
 RUN mkdir -p /app/data
 
 ENTRYPOINT ["docker-sre"]
-CMD ["--config", "/app/config.yaml"]
+CMD ["run", "--config", "/app/config.yaml"]

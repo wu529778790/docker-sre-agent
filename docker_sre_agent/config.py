@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SchedulerConfig:
+    quick_check_interval: int = 300       # 5 minutes - container status
+    scan_interval: int = 3600             # 1 hour - Docker garbage scan
+    deep_scan_interval: int = 86400       # 24 hours - full disk scan
 
 
 @dataclass
@@ -26,10 +34,31 @@ class RestartConfig:
 
 
 @dataclass
+class LLMConfig:
+    api_key: str = ""
+    model: str = "claude-sonnet-4-20250514"
+    max_tool_rounds: int = 10
+
+
+@dataclass
+class CleanupConfig:
+    mode: str = "report"  # report / auto
+    exclude_paths: list[str] = field(default_factory=lambda: ["/etc", "/boot", "/usr"])
+    exclude_containers: list[str] = field(default_factory=lambda: ["docker-sre-agent"])
+    auto_clean: list[str] = field(default_factory=lambda: [
+        "docker system prune -f",
+        "docker volume prune -f",
+    ])
+
+
+@dataclass
 class AgentConfig:
     name: str = "docker-sre-agent"
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     restart: RestartConfig = field(default_factory=RestartConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    cleanup: CleanupConfig = field(default_factory=CleanupConfig)
     log_level: str = "INFO"
 
 
@@ -40,7 +69,7 @@ def load_config(path: str | Path | None = None) -> AgentConfig:
 
     if not config_path.exists():
         logger.warning(f"Config not found: {config_path}, using defaults")
-        return config
+        return _apply_env(config)
 
     try:
         with open(config_path) as f:
@@ -48,6 +77,14 @@ def load_config(path: str | Path | None = None) -> AgentConfig:
 
         if "agent" in raw:
             config.name = raw["agent"].get("name", config.name)
+
+        if "scheduler" in raw:
+            s = raw["scheduler"]
+            config.scheduler = SchedulerConfig(
+                quick_check_interval=s.get("quick_check_interval", config.scheduler.quick_check_interval),
+                scan_interval=s.get("scan_interval", config.scheduler.scan_interval),
+                deep_scan_interval=s.get("deep_scan_interval", config.scheduler.deep_scan_interval),
+            )
 
         if "monitor" in raw:
             m = raw["monitor"]
@@ -65,6 +102,23 @@ def load_config(path: str | Path | None = None) -> AgentConfig:
                 max_consecutive_fails=r.get("max_consecutive_fails", config.restart.max_consecutive_fails),
             )
 
+        if "llm" in raw:
+            l = raw["llm"]
+            config.llm = LLMConfig(
+                api_key=l.get("api_key", config.llm.api_key),
+                model=l.get("model", config.llm.model),
+                max_tool_rounds=l.get("max_tool_rounds", config.llm.max_tool_rounds),
+            )
+
+        if "cleanup" in raw:
+            c = raw["cleanup"]
+            config.cleanup = CleanupConfig(
+                mode=c.get("mode", config.cleanup.mode),
+                exclude_paths=c.get("exclude_paths", config.cleanup.exclude_paths),
+                exclude_containers=c.get("exclude_containers", config.cleanup.exclude_containers),
+                auto_clean=c.get("auto_clean", config.cleanup.auto_clean),
+            )
+
         if "log" in raw:
             config.log_level = raw["log"].get("level", config.log_level)
 
@@ -72,4 +126,11 @@ def load_config(path: str | Path | None = None) -> AgentConfig:
     except Exception:
         logger.exception(f"Failed to load config from {config_path}, using defaults")
 
+    return _apply_env(config)
+
+
+def _apply_env(config: AgentConfig) -> AgentConfig:
+    """Apply environment variable overrides."""
+    if not config.llm.api_key:
+        config.llm.api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     return config

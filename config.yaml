@@ -1,16 +1,38 @@
 agent:
   name: "docker-sre-agent"
 
+scheduler:
+  quick_check_interval: 300       # 5 min - container status
+  scan_interval: 3600             # 1 hour - Docker garbage scan
+  deep_scan_interval: 86400       # 24 hours - full disk scan
+
 monitor:
   exclude_containers:
     - "docker-sre-agent"
-  watch_containers: []    # empty = monitor all
+  watch_containers: []
 
 restart:
   max_per_container_per_hour: 5
   max_global_per_hour: 20
   timeout: 10
   max_consecutive_fails: 3
+
+llm:
+  api_key: "${ANTHROPIC_API_KEY}"
+  model: "claude-sonnet-4-20250514"
+  max_tool_rounds: 10
+
+cleanup:
+  mode: "report"
+  exclude_paths:
+    - "/etc"
+    - "/boot"
+    - "/usr"
+  exclude_containers:
+    - "docker-sre-agent"
+  auto_clean:
+    - "docker system prune -f"
+    - "docker volume prune -f"
 
 log:
   level: "INFO"

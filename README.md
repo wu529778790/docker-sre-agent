@@ -1,54 +1,73 @@
 # Docker SRE Agent
 
-极简 Docker 监控 agent — 检测容器故障，自动重启。
+AI 驱动的 Docker 运维 Agent — 自动重启、智能扫描、清理建议。
 
-## 工作原理
+## 功能
 
-监听 Docker 事件流（`die`、`oom`、`unhealthy`），检测到异常后自动重启容器。
-
-重启策略三级升级：
-1. `docker restart` — 优雅重启
-2. `docker stop` + `docker start` — 强制重启
-3. 放弃 — 连续失败 3 次后停止，等人工介入
-
-两级限速防止重启风暴：
-- 每个容器每小时最多 5 次
-- 全局每小时最多 20 次
+- **自动重启** — 容器挂了自动重启，限速防风暴
+- **定时扫描** — 每小时 Docker 垃圾扫描，每天全盘扫描
+- **AI 分析** — Claude 分析扫描结果，给出清理建议
+- **交互问答** — 直接问 agent 关于服务器的任何问题
 
 ## 快速开始
 
-### 直接运行
+### 配置
+
+```bash
+# 设置 API Key
+export ANTHROPIC_API_KEY="your-key-here"
+
+# 或在 config.yaml 中配置
+```
+
+### 运行
 
 ```bash
 pip install -e .
-docker-sre --config config.yaml
+
+# 守护进程模式 — 自动扫描 + 容器监控
+docker-sre run --config config.yaml
+
+# 交互问答
+docker-sre ask "服务器上有什么垃圾"
+
+# 一次性扫描
+docker-sre scan
 ```
 
 ### Docker 部署
 
 ```bash
-docker compose up -d
+ANTHROPIC_API_KEY=xxx docker compose up -d
 ```
+
+## 命令
+
+| 命令 | 说明 |
+|------|------|
+| `docker-sre run` | 守护进程，定时扫描 + 容器监控 |
+| `docker-sre ask "问题"` | 问答模式，问完退出 |
+| `docker-sre scan` | 一次性扫描，输出报告 |
 
 ## 配置
 
 编辑 `config.yaml`：
 
 ```yaml
-monitor:
-  exclude_containers:
-    - "docker-sre-agent"    # 排除自身
-  watch_containers: []      # 空 = 监控所有
+scheduler:
+  scan_interval: 3600           # AI 扫描间隔（秒）
+  deep_scan_interval: 86400     # 全盘扫描间隔（秒）
 
-restart:
-  max_per_container_per_hour: 5
-  max_global_per_hour: 20
-  timeout: 10
-  max_consecutive_fails: 3
+llm:
+  model: "claude-sonnet-4-20250514"
+  max_tool_rounds: 10
+
+cleanup:
+  mode: "report"                # report=只报告, auto=自动清理
 ```
 
 ## 依赖
 
-- Python 3.11+
-- `docker` (Python SDK)
-- `pyyaml`
+- Python 3.9+
+- Docker
+- Anthropic API Key
