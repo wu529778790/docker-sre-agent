@@ -9,7 +9,8 @@ WORKDIR /app
 
 COPY . .
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir hatchling && \
+    pip install --no-cache-dir .
 
 RUN mkdir -p /app/data
 
