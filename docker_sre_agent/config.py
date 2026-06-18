@@ -186,14 +186,18 @@ def _load_dotenv(path: str = "/app/.env") -> None:
 
 
 def _apply_env(config: AgentConfig) -> AgentConfig:
-    """Apply environment variable overrides."""
+    """Apply environment variable overrides. .env values override YAML."""
     _load_dotenv()
-    if not config.llm.api_key:
-        config.llm.api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not config.llm.base_url:
-        config.llm.base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+    # Always prefer env vars over YAML config
+    env_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if env_key and env_key != "your-key-here":
+        config.llm.api_key = env_key
+    env_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+    if env_url:
+        config.llm.base_url = env_url
     if os.environ.get("ANTHROPIC_MODEL"):
         config.llm.model = os.environ["ANTHROPIC_MODEL"]
-    if not config.web.token:
-        config.web.token = os.environ.get("WEB_TOKEN", "")
+    env_token = os.environ.get("WEB_TOKEN", "")
+    if env_token:
+        config.web.token = env_token
     return config
