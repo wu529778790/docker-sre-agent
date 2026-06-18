@@ -10,4 +10,3 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config.yaml:/app/config.yaml:ro
-      - ./data:/app/data
