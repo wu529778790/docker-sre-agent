@@ -58,7 +58,9 @@ def create_app(config: AgentConfig) -> Flask:
 
     if config.web_token:
         _token_hash = _hash_token(config.web_token)
-        logger.info("Token auth enabled")
+        logger.info(f"Token auth enabled, hash={_token_hash[:8]}...")
+    else:
+        logger.warning("No WEB_TOKEN configured, auth disabled")
 
     llm = LLMClient(
         api_key=config.llm.api_key,
@@ -84,7 +86,10 @@ def auth():
     if not _token_hash:
         return {"ok": True, "msg": "no auth required"}
 
-    if _hash_token(token) == _token_hash:
+    token_hash = _hash_token(token)
+    logger.info(f"Auth attempt: input_hash={token_hash[:8]}... stored_hash={_token_hash[:8]}... match={token_hash == _token_hash}")
+
+    if token_hash == _token_hash:
         return {"ok": True}
     return {"ok": False, "error": "invalid token"}, 401
 
