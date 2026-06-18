@@ -27,16 +27,47 @@ _config: AgentConfig | None = None
 _token_hash: str = ""
 
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+# --- Rate limiting (per-IP, sliding window) ---
+import time as _time
+_rate_limits: dict[str, list[float]] = {}
+RATE_LIMIT = 10  # max requests per minute
+RATE_WINDOW = 60  # seconds
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Returns True if request is allowed."""
+    now = _time.time()
+    timestamps = _rate_limits.setdefault(ip, [])
+    # Remove old entries
+    timestamps[:] = [t for t in timestamps if now - t < RATE_WINDOW]
+    if len(timestamps) >= RATE_LIMIT:
+        return False
+    timestamps.append(now)
+    return True
 
 
 def require_auth(f):
     """Check Bearer token on all /api routes."""
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Rate limit
+        if not _check_rate_limit(request.remote_addr or "unknown"):
+            return {"error": "请求过于频繁，请稍后再试"}, 429
+
         if not _token_hash:
-            return f(*args, **kwargs)  # no token configured, allow all
+            return f(*args, **kwargs)
 
         auth = request.headers.get("Authorization", "")
         token = ""

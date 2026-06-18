@@ -58,6 +58,9 @@ jobs:
               ENV_FLAG="-v $DEPLOY_DIR/.env:/app/.env:ro"
             fi
 
+            # Save current image for rollback
+            OLD_IMAGE=$(sudo docker inspect --format='{{.Config.Image}}' "$CONTAINER" 2>/dev/null || echo "")
+
             sudo docker pull "$IMAGE"
             sudo docker stop "$CONTAINER" || true
             sudo docker rm "$CONTAINER" || true
@@ -68,4 +71,26 @@ jobs:
               -v /var/run/docker.sock:/var/run/docker.sock \
               $ENV_FLAG \
               "$IMAGE"
+
+            # Health check — wait 15s, rollback if unhealthy
+            sleep 15
+            STATUS=$(sudo docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo "unknown")
+            if [ "$STATUS" != "running" ]; then
+              echo "New container not running (status: $STATUS), rolling back..."
+              sudo docker stop "$CONTAINER" || true
+              sudo docker rm "$CONTAINER" || true
+              if [ -n "$OLD_IMAGE" ]; then
+                sudo docker run -d \
+                  --name "$CONTAINER" \
+                  --restart unless-stopped \
+                  -p 6700:6700 \
+                  -v /var/run/docker.sock:/var/run/docker.sock \
+                  $ENV_FLAG \
+                  "$OLD_IMAGE"
+                echo "Rolled back to $OLD_IMAGE"
+              fi
+            else
+              echo "Deploy successful (status: $STATUS)"
+            fi
+
             sudo docker image prune -f

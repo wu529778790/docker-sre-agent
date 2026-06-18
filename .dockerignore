@@ -1,0 +1,17 @@
+.git
+.github
+.gitignore
+.env
+.venv
+venv
+__pycache__
+*.pyc
+*.egg-info
+dist
+build
+data
+*.db
+*.md
+docs
+.mcp.json
+.mcp.json.example

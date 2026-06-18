@@ -25,6 +25,9 @@ class ContainerState:
     stopped: bool = False
 
 
+MAX_STATE_AGE = 86400  # 24 hours — evict states older than this
+
+
 class Scanner:
     """Monitors Docker events and restarts failed containers."""
 
@@ -34,6 +37,7 @@ class Scanner:
         self._states: dict[str, ContainerState] = {}
         self._global_timestamps: deque = deque()
         self._running = False
+        self._last_cleanup = time.time()
 
     def _should_monitor(self, name: str) -> bool:
         if name in self.config.monitor.exclude_containers:
@@ -132,6 +136,31 @@ class Scanner:
                 )
         self._record_restart(name)
 
+    def _cleanup_old_states(self) -> None:
+        """Evict container states older than MAX_STATE_AGE."""
+        now = time.time()
+        if now - self._last_cleanup < 3600:  # run at most once per hour
+            return
+        self._last_cleanup = now
+
+        cutoff = now - MAX_STATE_AGE
+        to_remove = []
+        for name, state in self._states.items():
+            # Check if last restart was too long ago
+            if state.restart_timestamps:
+                last = state.restart_timestamps[-1]
+                if last < cutoff:
+                    to_remove.append(name)
+            elif not state.stopped:
+                # No restart history and not stopped — check if container still exists
+                to_remove.append(name)
+
+        for name in to_remove:
+            del self._states[name]
+
+        if to_remove:
+            logger.debug(f"Cleaned up {len(to_remove)} old container states")
+
     def _event_loop(self) -> None:
         """Blocking event loop — runs in a thread."""
         while self._running:
@@ -142,6 +171,7 @@ class Scanner:
                         break
                     try:
                         self._handle_event(event)
+                        self._cleanup_old_states()
                     except Exception:
                         logger.exception("Error handling event")
             except Exception:
