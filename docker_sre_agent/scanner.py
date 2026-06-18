@@ -1,7 +1,8 @@
-"""Docker event listener + auto-restart (inherited from v1)."""
+"""Docker event listener + auto-restart."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import deque
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 TRIGGER_EVENTS = {"die", "oom"}
 HEALTH_EVENT_PREFIX = "health_status: unhealthy"
+RECONNECT_DELAY = 5  # seconds
 
 
 @dataclass
@@ -81,7 +83,8 @@ class Scanner:
         attrs = event.get("Actor", {}).get("Attributes", {})
         return attrs.get("name")
 
-    async def _restart(self, name: str) -> bool:
+    def _restart(self, name: str) -> bool:
+        """Restart a container (synchronous, called via to_thread)."""
         try:
             container = self.client.containers.get(name)
         except docker.errors.NotFound:
@@ -98,6 +101,7 @@ class Scanner:
             logger.info(f"Trying stop+start for '{name}'...")
             container.stop(timeout=self.config.restart.timeout)
             container.start()
+            logger.info(f"Container '{name}' stop+start succeeded")
             return True
         except Exception as e:
             logger.error(f"stop+start failed for '{name}': {e}")
@@ -129,22 +133,31 @@ class Scanner:
                 )
         self._record_restart(name)
 
-    async def start(self) -> None:
-        self._running = True
-        logger.info("Event listener started")
-        try:
-            for event in self.client.events(decode=True):
+    def _event_loop(self) -> None:
+        """Blocking event loop — runs in a thread."""
+        while self._running:
+            try:
+                logger.info("Connecting to Docker events...")
+                for event in self.client.events(decode=True):
+                    if not self._running:
+                        break
+                    try:
+                        self._handle_event(event)
+                    except Exception:
+                        logger.exception("Error handling event")
+            except Exception:
                 if not self._running:
                     break
-                try:
-                    self._handle_event(event)
-                except Exception:
-                    logger.exception("Error handling event")
-        except Exception:
-            logger.exception("Event loop crashed")
-        finally:
-            self._running = False
+                logger.exception(f"Docker events connection lost, reconnecting in {RECONNECT_DELAY}s...")
+                time.sleep(RECONNECT_DELAY)
+        logger.info("Event listener stopped")
+
+    async def start(self) -> None:
+        """Start the event listener in a background thread."""
+        self._running = True
+        logger.info("Event listener starting")
+        await asyncio.to_thread(self._event_loop)
 
     async def stop(self) -> None:
         self._running = False
-        logger.info("Event listener stopped")
+        logger.info("Event listener stopping")

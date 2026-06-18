@@ -38,7 +38,9 @@ class LLMConfig:
     api_key: str = ""
     base_url: str = ""
     model: str = "claude-sonnet-4-20250514"
+    max_tokens: int = 4096
     max_tool_rounds: int = 10
+    timeout: int = 120
 
 
 @dataclass
@@ -120,7 +122,9 @@ def load_config(path: str | Path | None = None) -> AgentConfig:
                 api_key=l.get("api_key", config.llm.api_key),
                 base_url=l.get("base_url", config.llm.base_url),
                 model=l.get("model", config.llm.model),
+                max_tokens=l.get("max_tokens", config.llm.max_tokens),
                 max_tool_rounds=l.get("max_tool_rounds", config.llm.max_tool_rounds),
+                timeout=l.get("timeout", config.llm.timeout),
             )
 
         if "cleanup" in raw:
@@ -153,22 +157,18 @@ def _load_dotenv(path: str = "/app/.env") -> None:
     """Load .env file into os.environ (simple parser, no external dep)."""
     p = Path(path)
     if not p.exists():
-        print(f"[dotenv] .env not found: {path}")
         return
-
-    print(f"[dotenv] .env exists: {p}, size={p.stat().st_size}")
 
     try:
         with open(p, "rb") as f:
             raw = f.read()
 
-        print(f"[dotenv] raw: {raw[:120]}")
-
-        # Detect BOM
+        # Detect and strip BOM
         if raw.startswith(b'\xef\xbb\xbf'):
             raw = raw[3:]
 
         text = raw.decode("utf-8", errors="replace")
+        loaded = 0
         for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
@@ -177,27 +177,33 @@ def _load_dotenv(path: str = "/app/.env") -> None:
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip().strip('"').strip("'")
-                already = key in os.environ
-                print(f"[dotenv] key={key} val_len={len(value)} already={already}")
-                if key and not already:
+                if key and key not in os.environ:
                     os.environ[key] = value
+                    loaded += 1
+
+        if loaded:
+            logger.info(f"Loaded {loaded} variables from {path}")
     except Exception as e:
-        print(f"[dotenv] FAILED: {e}")
+        logger.warning(f"Failed to load .env: {e}")
 
 
 def _apply_env(config: AgentConfig) -> AgentConfig:
     """Apply environment variable overrides. .env values override YAML."""
     _load_dotenv()
-    # Always prefer env vars over YAML config
+
     env_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if env_key and env_key != "your-key-here":
         config.llm.api_key = env_key
+
     env_url = os.environ.get("ANTHROPIC_BASE_URL", "")
     if env_url:
         config.llm.base_url = env_url
+
     if os.environ.get("ANTHROPIC_MODEL"):
         config.llm.model = os.environ["ANTHROPIC_MODEL"]
+
     env_token = os.environ.get("WEB_TOKEN", "")
     if env_token:
         config.web.token = env_token
+
     return config

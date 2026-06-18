@@ -58,7 +58,7 @@ def create_app(config: AgentConfig) -> Flask:
 
     if config.web_token:
         _token_hash = _hash_token(config.web_token)
-        logger.info(f"Token auth enabled, hash={_token_hash[:8]}...")
+        logger.info("Token auth enabled")
     else:
         logger.warning("No WEB_TOKEN configured, auth disabled")
 
@@ -66,6 +66,8 @@ def create_app(config: AgentConfig) -> Flask:
         api_key=config.llm.api_key,
         base_url=config.llm.base_url,
         model=config.llm.model,
+        max_tokens=config.llm.max_tokens,
+        timeout=config.llm.timeout,
     )
     _agent = Agent(llm=llm, tools=ALL_TOOLS, max_rounds=config.llm.max_tool_rounds)
 
@@ -87,7 +89,6 @@ def auth():
         return {"ok": True, "msg": "no auth required"}
 
     token_hash = _hash_token(token)
-    logger.info(f"Auth attempt: input_hash={token_hash[:8]}... stored_hash={_token_hash[:8]}... match={token_hash == _token_hash}")
 
     if token_hash == _token_hash:
         return {"ok": True}

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 
 from docker_sre_agent.agent import Agent
 from docker_sre_agent.config import AgentConfig
@@ -23,6 +22,7 @@ class Scheduler:
         self.agent = agent
         self._running = False
         self._tasks: list[asyncio.Task] = []
+        self._scan_lock = asyncio.Lock()  # prevent overlapping scans
 
     async def start(self) -> None:
         """Start the scheduler with periodic tasks."""
@@ -51,6 +51,8 @@ class Scheduler:
         self._running = False
         for task in self._tasks:
             task.cancel()
+        # Wait for tasks to finish cancelling
+        await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         logger.info("Scheduler stopped")
 
@@ -71,34 +73,41 @@ class Scheduler:
 
     async def _docker_scan(self) -> None:
         """Run Docker environment scan and analyze with LLM."""
-        docker_tool = ScanDockerTool()
-        scan_data = docker_tool.execute()
+        if self._scan_lock.locked():
+            logger.info("Docker scan already in progress, skipping")
+            return
+        async with self._scan_lock:
+            def _do_scan():
+                docker_tool = ScanDockerTool()
+                return docker_tool.execute()
 
-        prompt = SCAN_PROMPT.format(scan_data=scan_data)
+            scan_data = await asyncio.to_thread(_do_scan)
+            prompt = SCAN_PROMPT.format(scan_data=scan_data)
 
-        def on_tool_call(name, inp):
-            logger.info(f"  Agent calling: {name}")
+            def on_tool_call(name, inp):
+                logger.info(f"  Agent calling: {name}")
 
-        result = self.agent.run_streaming(
-            prompt,
-            on_tool_call=on_tool_call,
-        )
-
-        logger.info(f"Docker scan result:\n{result}")
+            result = await asyncio.to_thread(
+                self.agent.run_streaming, prompt, None, on_tool_call, None
+            )
+            logger.info(f"Docker scan result:\n{result}")
 
     async def _deep_scan(self) -> None:
         """Run full disk scan and analyze with LLM."""
-        docker_tool = ScanDockerTool()
-        disk_tool = ScanDiskTool()
+        if self._scan_lock.locked():
+            logger.info("Deep scan already in progress, skipping")
+            return
+        async with self._scan_lock:
+            def _do_scan():
+                docker_tool = ScanDockerTool()
+                disk_tool = ScanDiskTool()
+                docker_data = docker_tool.execute()
+                disk_data = disk_tool.execute()
+                return docker_data, disk_data
 
-        scan_data = {
-            "docker": docker_tool.execute(),
-            "disk": disk_tool.execute(),
-        }
-
-        prompt = SCAN_PROMPT.format(
-            scan_data=f"Docker 环境:\n{scan_data['docker']}\n\n磁盘状况:\n{scan_data['disk']}"
-        )
-
-        result = self.agent.run(prompt)
-        logger.info(f"Deep scan result:\n{result}")
+            docker_data, disk_data = await asyncio.to_thread(_do_scan)
+            prompt = SCAN_PROMPT.format(
+                scan_data=f"Docker 环境:\n{docker_data}\n\n磁盘状况:\n{disk_data}"
+            )
+            result = await asyncio.to_thread(self.agent.run, prompt)
+            logger.info(f"Deep scan result:\n{result}")

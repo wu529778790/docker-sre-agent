@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import subprocess
 from typing import Any
 
@@ -11,31 +12,21 @@ from docker_sre_agent.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
-# Commands that are safe to run automatically
-SAFE_COMMANDS = [
-    "docker system prune",
+# Exact allowed commands (no prefix matching — prevents injection)
+ALLOWED_COMMANDS = {
+    # Docker cleanup (safe, auto-execute)
     "docker system prune -f",
-    "docker volume prune",
+    "docker system prune -a -f",
     "docker volume prune -f",
-    "docker image prune",
     "docker image prune -f",
-    "docker container prune",
+    "docker image prune -a -f",
     "docker container prune -f",
-    "docker network prune",
     "docker network prune -f",
-]
-
-# Commands that require confirmation
-CONFIRM_COMMANDS = [
-    "docker rm",
-    "docker rmi",
-    "truncate",
-    "rm",
-]
+}
 
 
 class RunCommandTool(Tool):
-    """Execute a system command with safety checks."""
+    """Execute a system command with strict safety controls."""
 
     @property
     def name(self) -> str:
@@ -44,8 +35,8 @@ class RunCommandTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "执行系统清理命令。自动模式下安全命令自动执行，其他需用户确认。"
-            f"安全命令: {', '.join(SAFE_COMMANDS[:3])}..."
+            "执行 Docker 清理命令。只允许以下精确命令: "
+            + ", ".join(sorted(ALLOWED_COMMANDS))
         )
 
     @property
@@ -59,7 +50,7 @@ class RunCommandTool(Tool):
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "要执行的命令",
+                    "description": "要执行的命令（必须完全匹配允许列表）",
                 },
                 "reason": {
                     "type": "string",
@@ -69,40 +60,31 @@ class RunCommandTool(Tool):
             "required": ["command", "reason"],
         }
 
-    def is_safe(self, command: str) -> bool:
-        """Check if a command is in the safe list."""
-        cmd = command.strip()
-        return any(cmd.startswith(safe) for safe in SAFE_COMMANDS)
-
-    def is_allowed(self, command: str) -> bool:
-        """Check if a command is allowed at all."""
-        cmd = command.strip()
-        if self.is_safe(cmd):
-            return True
-        return any(cmd.startswith(allowed) for allowed in CONFIRM_COMMANDS)
-
     def execute(self, command: str = "", reason: str = "", **kwargs: Any) -> str:
         if not command:
             return json.dumps({"error": "未提供命令"}, ensure_ascii=False)
 
-        if not self.is_allowed(command):
+        # Exact match only — no prefix matching, no shell=True
+        cmd = command.strip()
+        if cmd not in ALLOWED_COMMANDS:
             return json.dumps({
-                "error": f"命令不在白名单中: {command}",
-                "allowed": SAFE_COMMANDS + CONFIRM_COMMANDS,
+                "error": f"命令不在白名单中: {cmd}",
+                "allowed": sorted(ALLOWED_COMMANDS),
             }, ensure_ascii=False)
 
-        logger.info(f"Executing: {command} (reason: {reason})")
+        logger.info(f"Executing: {cmd} (reason: {reason})")
 
         try:
+            # Split command safely, no shell=True
+            args = shlex.split(cmd)
             result = subprocess.run(
-                command,
-                shell=True,
+                args,
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
             return json.dumps({
-                "command": command,
+                "command": cmd,
                 "reason": reason,
                 "exit_code": result.returncode,
                 "stdout": result.stdout[-2000:] if result.stdout else "",
@@ -111,11 +93,11 @@ class RunCommandTool(Tool):
             }, ensure_ascii=False, indent=2)
         except subprocess.TimeoutExpired:
             return json.dumps({
-                "command": command,
+                "command": cmd,
                 "error": "命令执行超时（60秒）",
             }, ensure_ascii=False)
         except Exception as e:
             return json.dumps({
-                "command": command,
+                "command": cmd,
                 "error": str(e),
             }, ensure_ascii=False)
