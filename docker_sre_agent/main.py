@@ -117,9 +117,8 @@ def cmd_web(config) -> None:
         sys.exit(1)
 
     app = create_app(config)
-    host = config.llm.base_url if hasattr(config, 'web_host') else "0.0.0.0"
-    port = int(getattr(config, 'web_port', 6700))
-    logging.info(f"Web server starting on http://{host}:{port}")
+    port = config.web.port
+    logging.info(f"Web server starting on http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
 
 

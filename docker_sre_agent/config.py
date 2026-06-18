@@ -53,6 +53,12 @@ class CleanupConfig:
 
 
 @dataclass
+class WebConfig:
+    port: int = 6700
+    token: str = ""
+
+
+@dataclass
 class AgentConfig:
     name: str = "docker-sre-agent"
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
@@ -60,7 +66,12 @@ class AgentConfig:
     restart: RestartConfig = field(default_factory=RestartConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     cleanup: CleanupConfig = field(default_factory=CleanupConfig)
+    web: WebConfig = field(default_factory=WebConfig)
     log_level: str = "INFO"
+
+    @property
+    def web_token(self) -> str:
+        return self.web.token
 
 
 def load_config(path: str | Path | None = None) -> AgentConfig:
@@ -121,6 +132,13 @@ def load_config(path: str | Path | None = None) -> AgentConfig:
                 auto_clean=c.get("auto_clean", config.cleanup.auto_clean),
             )
 
+        if "web" in raw:
+            w = raw["web"]
+            config.web = WebConfig(
+                port=w.get("port", config.web.port),
+                token=w.get("token", config.web.token),
+            )
+
         if "log" in raw:
             config.log_level = raw["log"].get("level", config.log_level)
 
@@ -161,4 +179,6 @@ def _apply_env(config: AgentConfig) -> AgentConfig:
         config.llm.base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
     if os.environ.get("ANTHROPIC_MODEL"):
         config.llm.model = os.environ["ANTHROPIC_MODEL"]
+    if not config.web.token:
+        config.web.token = os.environ.get("WEB_TOKEN", "")
     return config

@@ -1,11 +1,13 @@
-"""Web chat server with SSE streaming."""
+"""Web chat server with SSE streaming and token auth."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import queue
 import threading
+from functools import wraps
 from pathlib import Path
 
 from flask import Flask, Response, request, send_from_directory
@@ -14,7 +16,7 @@ from docker_sre_agent.agent import Agent
 from docker_sre_agent.config import AgentConfig
 from docker_sre_agent.llm import LLMClient
 from docker_sre_agent.tools import ALL_TOOLS
-from docker_sre_agent.prompts import SYSTEM_PROMPT, ASK_PROMPT
+from docker_sre_agent.prompts import ASK_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +24,41 @@ app = Flask(__name__, template_folder=str(Path(__file__).parent / "templates"))
 
 _agent: Agent | None = None
 _config: AgentConfig | None = None
+_token_hash: str = ""
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def require_auth(f):
+    """Check Bearer token on all /api routes."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _token_hash:
+            return f(*args, **kwargs)  # no token configured, allow all
+
+        auth = request.headers.get("Authorization", "")
+        token = ""
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+        else:
+            token = request.args.get("token", "")
+
+        if not token or _hash_token(token) != _token_hash:
+            return {"error": "unauthorized"}, 401
+        return f(*args, **kwargs)
+    return decorated
 
 
 def create_app(config: AgentConfig) -> Flask:
     """Create and configure the Flask app."""
-    global _agent, _config
+    global _agent, _config, _token_hash
     _config = config
+
+    if config.web_token:
+        _token_hash = _hash_token(config.web_token)
+        logger.info("Token auth enabled")
 
     llm = LLMClient(
         api_key=config.llm.api_key,
@@ -44,7 +75,22 @@ def index():
     return send_from_directory(str(Path(__file__).parent / "templates"), "chat.html")
 
 
+@app.route("/api/auth", methods=["POST"])
+def auth():
+    """Verify token and return status."""
+    data = request.json
+    token = data.get("token", "")
+
+    if not _token_hash:
+        return {"ok": True, "msg": "no auth required"}
+
+    if _hash_token(token) == _token_hash:
+        return {"ok": True}
+    return {"ok": False, "error": "invalid token"}, 401
+
+
 @app.route("/api/chat", methods=["POST"])
+@require_auth
 def chat():
     """Non-streaming chat endpoint."""
     data = request.json
@@ -61,6 +107,7 @@ def chat():
 
 
 @app.route("/api/chat/stream")
+@require_auth
 def chat_stream():
     """SSE streaming chat endpoint."""
     message = request.args.get("message", "")
@@ -91,7 +138,7 @@ def chat_stream():
             except Exception as e:
                 q.put({"type": "error", "text": str(e)})
             finally:
-                q.put(None)  # sentinel
+                q.put(None)
 
         thread = threading.Thread(target=run_agent, daemon=True)
         thread.start()
@@ -106,6 +153,7 @@ def chat_stream():
 
 
 @app.route("/api/containers")
+@require_auth
 def list_containers():
     """List all containers."""
     import docker
@@ -125,6 +173,7 @@ def list_containers():
 
 
 @app.route("/api/logs/<name>")
+@require_auth
 def get_logs(name: str):
     """Get logs for a container."""
     tail = request.args.get("tail", 100, type=int)

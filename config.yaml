@@ -35,5 +35,9 @@ cleanup:
     - "docker system prune -f"
     - "docker volume prune -f"
 
+web:
+  port: 6700
+  token: "${WEB_TOKEN}"
+
 log:
   level: "INFO"
