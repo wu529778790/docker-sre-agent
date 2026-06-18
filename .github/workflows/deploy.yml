@@ -52,6 +52,10 @@ jobs:
           script: |
             IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]'):latest"
             CONTAINER="${{ github.event.repository.name }}"
+            DEPLOY_DIR="/opt/1panel/apps/openresty/openresty/www/sites/sre.shenzjd.com/index"
+
+            # 确保目录存在
+            sudo mkdir -p "$DEPLOY_DIR/data"
 
             sudo docker pull "$IMAGE"
             sudo docker stop "$CONTAINER" || true
@@ -60,5 +64,7 @@ jobs:
               --name "$CONTAINER" \
               --restart unless-stopped \
               -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$DEPLOY_DIR/.env:/app/.env:ro" \
+              -v "$DEPLOY_DIR/data:/app/data" \
               "$IMAGE"
             sudo docker image prune -f

@@ -131,8 +131,30 @@ def load_config(path: str | Path | None = None) -> AgentConfig:
     return _apply_env(config)
 
 
+def _load_dotenv(path: str = "/app/.env") -> None:
+    """Load .env file into os.environ (simple parser, no external dep)."""
+    p = Path(path)
+    if not p.exists():
+        return
+    try:
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+    except Exception:
+        pass
+
+
 def _apply_env(config: AgentConfig) -> AgentConfig:
     """Apply environment variable overrides."""
+    _load_dotenv()
     if not config.llm.api_key:
         config.llm.api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not config.llm.base_url:
