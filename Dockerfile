@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir .
 
 RUN mkdir -p /app/data
 
-EXPOSE 8080
+EXPOSE 6668
 
 ENTRYPOINT ["docker-sre"]
-CMD ["web", "--port", "8080"]
+CMD ["web", "--port", "6668"]

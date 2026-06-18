@@ -64,7 +64,7 @@ jobs:
             sudo docker run -d \
               --name "$CONTAINER" \
               --restart unless-stopped \
-              -p 8080:8080 \
+              -p 6668:6668 \
               -v /var/run/docker.sock:/var/run/docker.sock \
               $ENV_FLAG \
               "$IMAGE"

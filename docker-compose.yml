@@ -7,7 +7,7 @@ services:
     container_name: docker-sre-agent
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "6668:6668"
     env_file: .env
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
