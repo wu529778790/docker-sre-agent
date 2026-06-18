@@ -1,0 +1,16 @@
+agent:
+  name: "docker-sre-agent"
+
+monitor:
+  exclude_containers:
+    - "docker-sre-agent"
+  watch_containers: []    # empty = monitor all
+
+restart:
+  max_per_container_per_hour: 5
+  max_global_per_hour: 20
+  timeout: 10
+  max_consecutive_fails: 3
+
+log:
+  level: "INFO"

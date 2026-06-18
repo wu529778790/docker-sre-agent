@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docker-sre-agent"
+version = "0.1.0"
+description = "Minimal Docker monitoring agent - detects failures and restarts containers"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "docker>=7.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+docker-sre = "docker_sre_agent.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["docker_sre_agent"]
