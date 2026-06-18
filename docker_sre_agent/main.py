@@ -118,7 +118,7 @@ def cmd_web(config) -> None:
 
     app = create_app(config)
     host = config.llm.base_url if hasattr(config, 'web_host') else "0.0.0.0"
-    port = int(getattr(config, 'web_port', 6668))
+    port = int(getattr(config, 'web_port', 6700))
     logging.info(f"Web server starting on http://{host}:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
 
@@ -147,7 +147,7 @@ def main() -> None:
     # web — chat web UI
     web_parser = sub.add_parser("web", help="Run web chat server")
     web_parser.add_argument("--config", "-c", help="Path to config file", default=None)
-    web_parser.add_argument("--port", "-p", type=int, default=6668, help="Port (default: 6668)")
+    web_parser.add_argument("--port", "-p", type=int, default=6700, help="Port (default: 6700)")
 
     args = parser.parse_args()
 
