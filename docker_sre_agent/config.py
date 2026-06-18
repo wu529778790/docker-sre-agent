@@ -36,6 +36,7 @@ class RestartConfig:
 @dataclass
 class LLMConfig:
     api_key: str = ""
+    base_url: str = ""
     model: str = "claude-sonnet-4-20250514"
     max_tool_rounds: int = 10
 
@@ -106,6 +107,7 @@ def load_config(path: str | Path | None = None) -> AgentConfig:
             l = raw["llm"]
             config.llm = LLMConfig(
                 api_key=l.get("api_key", config.llm.api_key),
+                base_url=l.get("base_url", config.llm.base_url),
                 model=l.get("model", config.llm.model),
                 max_tool_rounds=l.get("max_tool_rounds", config.llm.max_tool_rounds),
             )
@@ -133,4 +135,8 @@ def _apply_env(config: AgentConfig) -> AgentConfig:
     """Apply environment variable overrides."""
     if not config.llm.api_key:
         config.llm.api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not config.llm.base_url:
+        config.llm.base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+    if os.environ.get("ANTHROPIC_MODEL"):
+        config.llm.model = os.environ["ANTHROPIC_MODEL"]
     return config

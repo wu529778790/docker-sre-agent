@@ -30,8 +30,11 @@ class AgentResponse:
 class LLMClient:
     """Wraps the Anthropic Claude API for agent use."""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514") -> None:
-        self.client = anthropic.Anthropic(api_key=api_key)
+    def __init__(self, api_key: str, base_url: str = "", model: str = "claude-sonnet-4-20250514") -> None:
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self.client = anthropic.Anthropic(**kwargs)
         self.model = model
 
     def chat(

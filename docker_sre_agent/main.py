@@ -32,7 +32,7 @@ def cmd_run(config) -> None:
         print("错误: 未配置 ANTHROPIC_API_KEY，请在 config.yaml 或环境变量中设置")
         sys.exit(1)
 
-    llm = LLMClient(api_key=config.llm.api_key, model=config.llm.model)
+    llm = LLMClient(api_key=config.llm.api_key, base_url=config.llm.base_url, model=config.llm.model)
     agent = Agent(llm=llm, tools=ALL_TOOLS, max_rounds=config.llm.max_tool_rounds)
     scanner = Scanner(config)
     scheduler = Scheduler(config, agent)
@@ -65,7 +65,7 @@ def cmd_ask(config, question: str) -> None:
         print("错误: 未配置 ANTHROPIC_API_KEY")
         sys.exit(1)
 
-    llm = LLMClient(api_key=config.llm.api_key, model=config.llm.model)
+    llm = LLMClient(api_key=config.llm.api_key, base_url=config.llm.base_url, model=config.llm.model)
     agent = Agent(llm=llm, tools=ALL_TOOLS, max_rounds=config.llm.max_tool_rounds)
 
     prompt = ASK_PROMPT.format(question=question)
@@ -95,7 +95,7 @@ def cmd_scan(config) -> None:
     disk_data = disk_tool.execute()
 
     if config.llm.api_key:
-        llm = LLMClient(api_key=config.llm.api_key, model=config.llm.model)
+        llm = LLMClient(api_key=config.llm.api_key, base_url=config.llm.base_url, model=config.llm.model)
         agent = Agent(llm=llm, tools=ALL_TOOLS, max_rounds=config.llm.max_tool_rounds)
         from docker_sre_agent.prompts import SCAN_PROMPT
         prompt = SCAN_PROMPT.format(

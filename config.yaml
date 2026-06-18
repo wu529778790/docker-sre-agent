@@ -19,6 +19,7 @@ restart:
 
 llm:
   api_key: "${ANTHROPIC_API_KEY}"
+  base_url: "${ANTHROPIC_BASE_URL}"   # 留空则用官方 API，或填代理地址
   model: "claude-sonnet-4-20250514"
   max_tool_rounds: 10
 
