@@ -127,8 +127,12 @@ def load_config(path: str | Path | None = None) -> AgentConfig:
 
 
 def _load_dotenv(path: str = "/app/.env") -> None:
-    p = Path(path)
-    if not p.exists():
+    """Load .env from container path or project root."""
+    for env_path in [Path(path), Path(".env")]:
+        if env_path.exists():
+            p = env_path
+            break
+    else:
         return
     try:
         with open(p, "rb") as f:
@@ -157,7 +161,7 @@ def _load_dotenv(path: str = "/app/.env") -> None:
 def _apply_env(config: AgentConfig) -> AgentConfig:
     _load_dotenv()
     env_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if env_key and env_key != "your-key-here":
+    if env_key and env_key not in ("your-key-here", ""):
         config.llm.api_key = env_key
     env_url = os.environ.get("ANTHROPIC_BASE_URL", "")
     if env_url:
@@ -167,4 +171,13 @@ def _apply_env(config: AgentConfig) -> AgentConfig:
     env_token = os.environ.get("WEB_TOKEN", "")
     if env_token:
         config.web.token = env_token
+    # Clear placeholder tokens
+    if config.web.token.startswith("${"):
+        config.web.token = ""
+    # Validate critical values
+    if config.monitor.check_interval < 1:
+        logger.warning("check_interval < 1, resetting to 300")
+        config.monitor.check_interval = 300
+    if config.restart.max_per_container_per_hour < 1:
+        config.restart.max_per_container_per_hour = 5
     return config

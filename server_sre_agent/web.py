@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import queue
@@ -22,6 +23,7 @@ from server_sre_agent.prompts import ASK_PROMPT
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, template_folder=str(Path(__file__).parent / "templates"))
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024  # 100KB max request
 
 _agent: Agent | None = None
 _config: AgentConfig | None = None
@@ -40,17 +42,20 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _verify_token(token: str) -> bool:
+    """Constant-time token comparison."""
+    return hmac.compare_digest(_hash_token(token), _token_hash)
+
+
 # --- Rate limiting (per-IP, sliding window) ---
 _rate_limits: dict[str, list[float]] = {}
-RATE_LIMIT = 10  # max requests per minute
-RATE_WINDOW = 60  # seconds
+RATE_LIMIT = 10
+RATE_WINDOW = 60
 
 
 def _check_rate_limit(ip: str) -> bool:
-    """Returns True if request is allowed."""
     now = _time.time()
     timestamps = _rate_limits.setdefault(ip, [])
-    # Remove old entries
     timestamps[:] = [t for t in timestamps if now - t < RATE_WINDOW]
     if len(timestamps) >= RATE_LIMIT:
         return False
@@ -58,32 +63,51 @@ def _check_rate_limit(ip: str) -> bool:
     return True
 
 
+# --- Session management with eviction ---
+_sessions: dict[str, list[dict]] = {}
+_session_last_access: dict[str, float] = {}
+SESSION_MAX_AGE = 3600  # 1 hour
+MAX_SESSIONS = 100
+
+
+def _evict_sessions() -> None:
+    """Remove stale sessions."""
+    now = _time.time()
+    stale = [k for k, t in _session_last_access.items() if now - t > SESSION_MAX_AGE]
+    for k in stale:
+        _sessions.pop(k, None)
+        _session_last_access.pop(k, None)
+    # If still too many, remove oldest
+    if len(_sessions) > MAX_SESSIONS:
+        sorted_keys = sorted(_session_last_access, key=_session_last_access.get)
+        for k in sorted_keys[:len(_sessions) - MAX_SESSIONS]:
+            _sessions.pop(k, None)
+            _session_last_access.pop(k, None)
+
+
+def _get_session(key: str) -> list[dict]:
+    _session_last_access[key] = _time.time()
+    if key not in _sessions:
+        _sessions[key] = []
+    return _sessions[key]
+
+
 def require_auth(f):
-    """Check Bearer token on all /api routes."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Rate limit
         if not _check_rate_limit(request.remote_addr or "unknown"):
-            return {"error": "请求过于频繁，请稍后再试"}, 429
-
+            return {"error": "请求过于频繁"}, 429
         if not _token_hash:
             return f(*args, **kwargs)
-
         auth = request.headers.get("Authorization", "")
-        token = ""
-        if auth.startswith("Bearer "):
-            token = auth[7:]
-        else:
-            token = request.args.get("token", "")
-
-        if not token or _hash_token(token) != _token_hash:
+        token = auth[7:] if auth.startswith("Bearer ") else request.args.get("token", "")
+        if not token or not _verify_token(token):
             return {"error": "unauthorized"}, 401
         return f(*args, **kwargs)
     return decorated
 
 
 def create_app(config: AgentConfig) -> Flask:
-    """Create and configure the Flask app."""
     global _agent, _config, _token_hash
     _config = config
 
@@ -94,15 +118,22 @@ def create_app(config: AgentConfig) -> Flask:
         logger.warning("No WEB_TOKEN configured, auth disabled")
 
     llm = LLMClient(
-        api_key=config.llm.api_key,
-        base_url=config.llm.base_url,
-        model=config.llm.model,
-        max_tokens=config.llm.max_tokens,
-        timeout=config.llm.timeout,
+        api_key=config.llm.api_key, base_url=config.llm.base_url,
+        model=config.llm.model, max_tokens=config.llm.max_tokens, timeout=config.llm.timeout,
     )
     _agent = Agent(llm=llm, tools=ALL_TOOLS, max_rounds=config.llm.max_tool_rounds)
-
     return app
+
+
+def _get_session_key() -> str:
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return _hash_token(auth[7:])
+    return request.remote_addr or "anonymous"
+
+
+MAX_MESSAGE_LENGTH = 4000
+MAX_HISTORY_MESSAGES = 50
 
 
 @app.route("/")
@@ -112,53 +143,22 @@ def index():
 
 @app.route("/api/auth", methods=["POST"])
 def auth():
-    """Verify token and return status."""
     data = request.json
+    if not data:
+        return {"error": "invalid JSON"}, 400
     token = data.get("token", "")
-
     if not _token_hash:
         return {"ok": True, "msg": "no auth required"}
-
-    token_hash = _hash_token(token)
-
-    if token_hash == _token_hash:
+    if _verify_token(token):
         return {"ok": True}
     return {"ok": False, "error": "invalid token"}, 401
-
-
-MAX_MESSAGE_LENGTH = 4000
-MAX_HISTORY_MESSAGES = 50  # keep last N messages per session
-
-
-# --- Conversation history (per auth token, in-memory) ---
-_conversations: dict[str, list[dict]] = {}
-
-
-def _get_session_key() -> str:
-    """Get session key from auth token or IP."""
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        return _hash_token(auth[7:])
-    return request.remote_addr or "anonymous"
-
-
-def _get_history() -> list[dict]:
-    key = _get_session_key()
-    return _conversations.setdefault(key, [])
-
-
-def _trim_history(history: list[dict]) -> None:
-    """Keep history within limits."""
-    while len(history) > MAX_HISTORY_MESSAGES:
-        history.pop(0)
 
 
 @app.route("/api/chat/history", methods=["GET"])
 @require_auth
 def get_chat_history():
-    """Get conversation history."""
-    history = _get_history()
-    # Extract readable messages (skip tool internals)
+    _evict_sessions()
+    history = _get_session(_get_session_key())
     readable = []
     for msg in history:
         role = msg.get("role", "")
@@ -173,79 +173,76 @@ def get_chat_history():
 @app.route("/api/chat/clear", methods=["POST"])
 @require_auth
 def clear_chat_history():
-    """Clear conversation history."""
     key = _get_session_key()
-    _conversations[key] = []
+    _sessions[key] = []
     return {"ok": True}
 
 
 @app.route("/api/chat", methods=["POST"])
 @require_auth
 def chat():
-    """Non-streaming chat endpoint with conversation memory."""
     data = request.json
+    if not data:
+        return {"error": "invalid JSON"}, 400
     message = data.get("message", "")
-    if not message:
+    if not message or not isinstance(message, str):
         return {"error": "empty message"}, 400
     if len(message) > MAX_MESSAGE_LENGTH:
         return {"error": f"消息过长（最多 {MAX_MESSAGE_LENGTH} 字）"}, 400
-
     if not _agent:
         return {"error": "agent not initialized"}, 500
 
-    history = _get_history()
+    session_key = _get_session_key()
+    history = _get_session(session_key)
 
-    # First message — add system context
     if not history:
         history.append({"role": "user", "content": ASK_PROMPT.format(question="")})
-        history.append({"role": "assistant", "content": "好的，我是你的服务器运维助手。你可以问我任何关于服务器、Docker、日志的问题。"})
+        history.append({"role": "assistant", "content": "好的，我是你的服务器运维助手。"})
 
-    # Add user message
     history.append({"role": "user", "content": message})
-    _trim_history(history)
+    while len(history) > MAX_HISTORY_MESSAGES:
+        history.pop(0)
 
-    # Run agent with full history
     result_messages = _agent.chat(history)
+    _sessions[session_key] = result_messages
+    _session_last_access[session_key] = _time.time()
 
-    # Update history with agent's response
-    _conversations[_get_session_key()] = result_messages
-
-    # Extract reply text
     reply = ""
     for msg in reversed(result_messages):
         if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
             reply = msg["content"]
             break
-
     return {"reply": reply}
 
 
 @app.route("/api/chat/stream", methods=["POST"])
 @require_auth
 def chat_stream():
-    """SSE streaming chat endpoint with conversation memory."""
-    data = request.json or {}
+    data = request.json
+    if not data:
+        return {"error": "invalid JSON"}, 400
     message = data.get("message", "")
-    if not message:
+    if not message or not isinstance(message, str):
         return {"error": "empty message"}, 400
     if len(message) > MAX_MESSAGE_LENGTH:
         return {"error": f"消息过长（最多 {MAX_MESSAGE_LENGTH} 字）"}, 400
-
     if not _agent:
         return {"error": "agent not initialized"}, 500
 
-    # Capture session data BEFORE entering background thread
     session_key = _get_session_key()
-    history = _get_history()
+    history = _get_session(session_key)
 
-    # First message — add system context
     if not history:
         history.append({"role": "user", "content": ASK_PROMPT.format(question="")})
-        history.append({"role": "assistant", "content": "好的，我是你的服务器运维助手。你可以问我任何关于服务器、Docker、日志的问题。"})
+        history.append({"role": "assistant", "content": "好的，我是你的服务器运维助手。"})
 
-    # Add user message
     history.append({"role": "user", "content": message})
-    _trim_history(history)
+    while len(history) > MAX_HISTORY_MESSAGES:
+        history.pop(0)
+
+    # Deep copy history for the thread to avoid race conditions
+    import copy
+    history_copy = copy.deepcopy(history)
 
     def generate():
         q: queue.Queue = queue.Queue()
@@ -259,14 +256,13 @@ def chat_stream():
         def run_agent():
             try:
                 result_messages = _agent.chat_streaming(
-                    history,
+                    history_copy,
                     on_tool_call=on_tool_call,
                     on_tool_result=on_tool_result,
                 )
-                # Update conversation history
-                _conversations[session_key] = result_messages
+                _sessions[session_key] = result_messages
+                _session_last_access[session_key] = _time.time()
 
-                # Extract reply text
                 reply = ""
                 for msg in reversed(result_messages):
                     if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
@@ -293,7 +289,6 @@ def chat_stream():
 @app.route("/api/containers")
 @require_auth
 def list_containers():
-    """List all containers."""
     from server_sre_agent.docker_client import get_client
     try:
         client = get_client()
@@ -313,7 +308,6 @@ def list_containers():
 @app.route("/api/logs/<name>")
 @require_auth
 def get_logs(name: str):
-    """Get logs for a container."""
     tail = request.args.get("tail", 100, type=int)
     grep = request.args.get("grep", "")
     since = request.args.get("since", "")
@@ -322,9 +316,8 @@ def get_logs(name: str):
     try:
         client = get_client()
         container = client.containers.get(name)
-        kwargs = {"tail": tail, "timestamps": True}
+        kwargs = {"tail": min(tail, 500), "timestamps": True}
         if since:
-            # Convert relative time like "30m", "1h" to datetime
             import datetime
             now = datetime.datetime.now(datetime.timezone.utc)
             if since.endswith("m"):
@@ -339,6 +332,6 @@ def get_logs(name: str):
         logs = container.logs(**kwargs).decode("utf-8", errors="replace")
         if grep:
             logs = "\n".join(line for line in logs.splitlines() if grep in line)
-        return Response(logs, mimetype="text/plain")
+        return Response(logs[:50000], mimetype="text/plain")
     except Exception as e:
         return {"error": str(e)}, 500

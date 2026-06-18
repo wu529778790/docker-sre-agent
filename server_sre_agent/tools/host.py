@@ -15,12 +15,19 @@ ALLOWED_HOST_COMMANDS = {
     "du -sh /*",
     "df -h",
     "ls -la /host/",
-    "find /host -type f -size +100M -printf '%s %p\n'",
+    "find /host -type f -size +100M -printf '%s %p\\n'",
     "du -sh /host/var/lib/docker/*",
     "du -sh /host/opt/*",
     "du -sh /host/tmp/*",
     "du -sh /host/var/log/*",
     "docker system df",
+}
+
+HOST_CONTAINER_LIMITS = {
+    "mem_limit": "256m",
+    "cpu_quota": 50000,
+    "pids_limit": 50,
+    "network_disabled": True,
 }
 
 
@@ -31,7 +38,7 @@ class HostExecTool(Tool):
 
     @property
     def description(self) -> str:
-        return "在宿主机上执行命令（通过临时只读容器）"
+        return "在宿主机上执行命令（通过临时只读容器，有资源限制）"
 
     @property
     def is_destructive(self) -> bool:
@@ -42,10 +49,7 @@ class HostExecTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "要在宿主机上执行的命令（只读）",
-                },
+                "command": {"type": "string", "description": "要在宿主机上执行的命令（只读）"},
             },
             "required": ["command"],
         }
@@ -63,19 +67,23 @@ class HostExecTool(Tool):
 
         try:
             client = get_client()
+            try:
+                client.images.get("alpine:latest")
+            except Exception:
+                logger.info("Pulling alpine:latest...")
+                client.images.pull("alpine:latest")
+
             result = client.containers.run(
                 "alpine:latest",
                 command=["sh", "-c", cmd],
                 volumes={"/": {"bind": "/host", "mode": "ro"}},
                 remove=True,
                 detach=False,
-                timeout=30,
+                **HOST_CONTAINER_LIMITS,
             )
             output = result.decode("utf-8", errors="replace") if isinstance(result, bytes) else result
             return json.dumps({
-                "command": cmd,
-                "success": True,
-                "output": output[:5000],
+                "command": cmd, "success": True, "output": output[:5000],
             }, ensure_ascii=False, indent=2)
         except Exception as e:
             return json.dumps({"command": cmd, "error": str(e)}, ensure_ascii=False)
@@ -94,29 +102,30 @@ class HostDiskScanTool(Tool):
     def input_schema(self) -> dict[str, Any]:
         return {"type": "object", "properties": {}}
 
+    def _run_host_cmd(self, client, cmd: str, timeout: int = 30) -> str:
+        try:
+            result = client.containers.run(
+                "alpine:latest",
+                command=["sh", "-c", cmd],
+                volumes={"/": {"bind": "/host", "mode": "ro"}},
+                remove=True, detach=False, timeout=timeout,
+                **HOST_CONTAINER_LIMITS,
+            )
+            return result.decode("utf-8", errors="replace") if isinstance(result, bytes) else result
+        except Exception as e:
+            return f"Error: {e}"
+
     def execute(self, **kwargs: Any) -> str:
         try:
             client = get_client()
-            df_result = client.containers.run(
-                "alpine:latest",
-                command=["sh", "-c", "df -h /"],
-                volumes={"/": {"bind": "/host", "mode": "ro"}},
-                remove=True, detach=False, timeout=10,
-            ).decode("utf-8", errors="replace")
+            try:
+                client.images.get("alpine:latest")
+            except Exception:
+                client.images.pull("alpine:latest")
 
-            du_result = client.containers.run(
-                "alpine:latest",
-                command=["sh", "-c", "du -sh /host/*/ 2>/dev/null | sort -rh | head -15"],
-                volumes={"/": {"bind": "/host", "mode": "ro"}},
-                remove=True, detach=False, timeout=30,
-            ).decode("utf-8", errors="replace")
-
-            docker_result = client.containers.run(
-                "alpine:latest",
-                command=["sh", "-c", "du -sh /host/var/lib/docker/*/ 2>/dev/null | sort -rh"],
-                volumes={"/": {"bind": "/host", "mode": "ro"}},
-                remove=True, detach=False, timeout=30,
-            ).decode("utf-8", errors="replace")
+            df_result = self._run_host_cmd(client, "df -h /", timeout=10)
+            du_result = self._run_host_cmd(client, "du -sh /host/*/ 2>/dev/null | sort -rh | head -15", timeout=30)
+            docker_result = self._run_host_cmd(client, "du -sh /host/var/lib/docker/*/ 2>/dev/null | sort -rh", timeout=30)
 
             return json.dumps({
                 "disk_overview": df_result.strip(),

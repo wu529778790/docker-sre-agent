@@ -14,6 +14,15 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
+# Transient errors that should be retried
+RETRYABLE_ERRORS = (
+    anthropic.RateLimitError,
+    anthropic.APIConnectionError,
+    anthropic.APITimeoutError,
+    anthropic.InternalServerError,  # 5xx
+    anthropic.APIStatusError,       # covers overloaded (529) etc.
+)
+
 
 @dataclass
 class ToolCall:
@@ -40,6 +49,8 @@ class LLMClient:
         self.client = anthropic.Anthropic(**kwargs)
         self.model = model
         self.max_tokens = max_tokens
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
              system: str | None = None) -> AgentResponse:
@@ -61,18 +72,36 @@ class LLMClient:
                         tool_calls.append(ToolCall(id=block.id, name=block.name, input=block.input))
                     elif block.type == "text":
                         text_parts.append(block.text)
+
+                # Track token usage
+                self._total_input_tokens += response.usage.input_tokens
+                self._total_output_tokens += response.usage.output_tokens
+                logger.debug(
+                    f"LLM tokens: in={response.usage.input_tokens} out={response.usage.output_tokens} "
+                    f"(total: in={self._total_input_tokens} out={self._total_output_tokens})"
+                )
+
                 return AgentResponse(
                     text="\n".join(text_parts) if text_parts else None,
                     tool_calls=tool_calls, stop_reason=response.stop_reason,
                     input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens,
                 )
-            except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.APITimeoutError) as e:
+            except RETRYABLE_ERRORS as e:
                 last_error = e
                 wait = RETRY_DELAY * (2 ** attempt)
-                logger.warning(f"LLM error, retrying in {wait}s: {e}")
+                logger.warning(f"LLM error (attempt {attempt+1}/{MAX_RETRIES}), retrying in {wait}s: {e}")
                 time.sleep(wait)
+            except Exception as e:
+                # Non-retryable error — return error response, don't crash
+                logger.error(f"LLM non-retryable error: {e}")
+                return AgentResponse(text=None, tool_calls=[], stop_reason="error")
 
-        return AgentResponse(text=f"LLM 调用失败: {last_error}", tool_calls=[], stop_reason="error")
+        # All retries exhausted — return error, don't fake an assistant message
+        logger.error(f"LLM failed after {MAX_RETRIES} retries: {last_error}")
+        return AgentResponse(text=None, tool_calls=[], stop_reason="error")
+
+    def get_token_usage(self) -> dict[str, int]:
+        return {"input": self._total_input_tokens, "output": self._total_output_tokens}
 
     def make_tool_result(self, tool_call_id: str, content: str, is_error: bool = False) -> dict:
         return {
