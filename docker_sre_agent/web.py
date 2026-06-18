@@ -1,8 +1,9 @@
-"""Web chat server with SSE streaming and token auth."""
+"""Web chat server with SSE streaming, token auth, and session memory."""
 
 from __future__ import annotations
 
 import hashlib
+import uuid
 import json
 import logging
 import queue
