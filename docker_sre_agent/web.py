@@ -235,6 +235,8 @@ def chat_stream():
     if not _agent:
         return {"error": "agent not initialized"}, 500
 
+    # Capture session data BEFORE entering background thread
+    session_key = _get_session_key()
     history = _get_history()
 
     # First message — add system context
@@ -263,7 +265,7 @@ def chat_stream():
                     on_tool_result=on_tool_result,
                 )
                 # Update conversation history
-                _conversations[_get_session_key()] = result_messages
+                _conversations[session_key] = result_messages
 
                 # Extract reply text
                 reply = ""
