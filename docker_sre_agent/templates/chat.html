@@ -226,8 +226,14 @@ async function send() {
   const thinking = addThinking();
 
   try {
-    const url = `/api/chat/stream?message=${encodeURIComponent(message)}&token=${encodeURIComponent(authToken)}`;
-    const res = await fetch(url);
+    const res = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({ message }),
+    });
 
     if (!res.ok) {
       thinking.remove();

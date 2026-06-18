@@ -106,11 +106,12 @@ def chat():
     return {"reply": result}
 
 
-@app.route("/api/chat/stream")
+@app.route("/api/chat/stream", methods=["POST"])
 @require_auth
 def chat_stream():
     """SSE streaming chat endpoint."""
-    message = request.args.get("message", "")
+    data = request.json or {}
+    message = data.get("message", "")
     if not message:
         return {"error": "empty message"}, 400
 
